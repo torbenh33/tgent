@@ -62,6 +62,30 @@ def add_git_note(sha1: str, note_content: str) -> bool:
         import os
         os.remove(temp_filepath)
 
+def get_sha1_for_path(pathname: str) -> str | None:
+    """
+    Retrieves the Git SHA-1 hash for a given file path relative to the repository root.
+    Returns the SHA-1 string on success, or None if the file is not tracked or an error occurs.
+    """
+    import subprocess
+    try:
+        # Use git rev-parse --verify to get the full commit SHA of the current version of the file
+        result = subprocess.run(
+            ['git', 'rev-parse', '--verify', pathname], 
+            check=True, 
+            capture_output=True, 
+            text=True
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        # This usually means the file is not tracked or does not exist in the index/repo
+        print(f"Warning: Could not find SHA-1 for path '{pathname}'. Is it tracked by Git?")
+        return None
+    except FileNotFoundError:
+        # git command itself might not be found
+        print("Error: 'git' command not found. Ensure Git is installed and in PATH.")
+        return None
+
 def summarize_file(filepath: str) -> str:
     """
     Reads a file and sends its content to the LLM for summarization.
