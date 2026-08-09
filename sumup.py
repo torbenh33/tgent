@@ -27,6 +27,41 @@ def get_ollama_summary(prompt: str) -> str:
     except requests.exceptions.RequestException as e:
         return f"Error communicating with Ollama: {e}"
 
+def add_git_note(sha1: str, note_content: str) -> bool:
+    """
+    Adds a git note (comment) to a specified commit SHA-1.
+    Uses temporary files for safe interaction with 'git notes'.
+    Returns True on success, False otherwise.
+    """
+    import subprocess
+    import tempfile
+
+    # Create a temporary file to hold the note content
+    with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+        tmp.write(note_content)
+        temp_filepath = tmp.name
+
+    try:
+        print(f"Attempting to add git note to {sha1}...")
+        # Execute the command: git notes --file <temp_file> <sha1>
+        result = subprocess.run(
+            ['git', 'notes', '--file', temp_filepath, sha1], 
+            check=True, 
+            capture_output=True, 
+            text=True
+        )
+        print("Successfully added git note.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error adding git note to {sha1}:")
+        print(f"STDOUT: {e.stdout}")
+        print(f"STDERR: {e.stderr}")
+        return False
+    finally:
+        # Clean up the temporary file
+        import os
+        os.remove(temp_filepath)
+
 def summarize_file(filepath: str) -> str:
     """
     Reads a file and sends its content to the LLM for summarization.
