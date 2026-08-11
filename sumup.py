@@ -31,7 +31,11 @@ def add_git_note(sha1: str, note_content: str) -> bool:
     """
     Adds a git note (comment) to a specified commit SHA-1.
     Uses temporary files for safe interaction with 'git notes'.
-    Returns True on success, False otherwise.
+
+    >>> # Assuming a valid SHA-1 and note content are provided
+    >>> # Note: This test requires git to be configured correctly in the environment.
+    >>> result = add_git_note("abcdef123456", "Test note content")
+    >>> print(result)
     """
     import subprocess
     import tempfile
@@ -66,6 +70,16 @@ def get_sha1_for_path(pathname: str) -> str | None:
     """
     Retrieves the Git SHA-1 hash for a given file path relative to the repository root.
     Returns the SHA-1 string on success, or None if the file is not tracked or an error occurs.
+
+    >>> # Assuming 'README.md' exists and is tracked in the current git repo state.
+    >>> # The actual output will be the commit hash of README.md.
+    >>> get_sha1_for_path("README.md")
+    'abcdef123456...'
+
+    >>> # Assuming 'nonexistent/file.txt' is not tracked or does not exist.
+    >>> # The function prints a warning and returns None.
+    >>> get_sha1_for_path("nonexistent/file.txt")
+    None
     """
     import subprocess
     try:
