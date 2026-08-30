@@ -34,8 +34,8 @@ def add_git_note(sha1: str, note_content: str) -> bool:
 
     >>> # Assuming a valid SHA-1 and note content are provided
     >>> # Note: This test requires git to be configured correctly in the environment.
-    >>> result = add_git_note("abcdef123456", "Test note content")
-    >>> print(result)
+    >>> add_git_note("2a755dced1a9967f5f50fd570960ee2b34c808dd", "Test note content")
+    True
     """
     import subprocess
     import tempfile
@@ -46,20 +46,15 @@ def add_git_note(sha1: str, note_content: str) -> bool:
         temp_filepath = tmp.name
 
     try:
-        print(f"Attempting to add git note to {sha1}...")
-        # Execute the command: git notes --file <temp_file> <sha1>
+        # Execute the command: git notes add -F <temp_file> <sha1>
         result = subprocess.run(
-            ['git', 'notes', '--file', temp_filepath, sha1], 
+            ['git', 'notes', 'add', '-f', '-F', temp_filepath, sha1], 
             check=True, 
             capture_output=True, 
             text=True
         )
-        print("Successfully added git note.")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error adding git note to {sha1}:")
-        print(f"STDOUT: {e.stdout}")
-        print(f"STDERR: {e.stderr}")
         return False
     finally:
         # Clean up the temporary file
@@ -71,21 +66,22 @@ def get_sha1_for_path(pathname: str) -> str | None:
     Retrieves the Git SHA-1 hash for a given file path relative to the repository root.
     Returns the SHA-1 string on success, or None if the file is not tracked or an error occurs.
 
+    >>> # NOTE: These tests require the current directory to be a valid Git repository 
+    >>> # with tracked files for successful execution.
     >>> # Assuming 'README.md' exists and is tracked in the current git repo state.
-    >>> # The actual output will be the commit hash of README.md.
     >>> get_sha1_for_path("README.md")
-    'abcdef123456...'
+    '2a755dced1a9967f5f50fd570960ee2b34c808dd'
 
     >>> # Assuming 'nonexistent/file.txt' is not tracked or does not exist.
     >>> # The function prints a warning and returns None.
     >>> get_sha1_for_path("nonexistent/file.txt")
-    None
+    Warning: Could not find SHA-1 for path 'nonexistent/file.txt'. Is it tracked by Git?
     """
     import subprocess
     try:
         # Use git rev-parse --verify to get the full commit SHA of the current version of the file
         result = subprocess.run(
-            ['git', 'rev-parse', '--verify', pathname], 
+                ['git', 'rev-parse', '--verify', ':'+pathname], 
             check=True, 
             capture_output=True, 
             text=True
