@@ -30,7 +30,7 @@ async def run_tests(module_path: str, test_type: Literal["unit", "doctest"]) -> 
         if test_type == "unit":
             return await _run_unit_tests(module_path)
         elif test_type == "doctest":
-            return await _run_doctests(module_path)
+            return await run_doctests(module_path)
         else:
             return {"status": "error", "message": f"Unknown test type: {test_type}. Must be 'unit' or 'doctest'."}
 
@@ -69,16 +69,22 @@ async def _run_unit_tests(module_path: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-async def _run_doctests(module_path: str) -> dict:
-    """Internal helper to run doctest via subprocess."""
+@mcp.resource("doctests://{modpath}")
+async def run_doctests(modpath: str) -> dict:
+    """Run doctests and return the results"""
     try:
         # Run doctest using the python module runner and capture output
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "doctest", "-v", module_path,
+            sys.executable, "-m", "doctest", "-v", modpath,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         output = stdout.decode().strip() + "\n" + stderr.decode().strip()
+
+        # Check return code first: non-zero indicates failure
+        if process.returncode != 0:
+            summary = f"FAILURE: Doctests failed (Exit Code {process.returncode}). Details:\n{output}"
+            return {"status": "error", "output": summary, "details": output}
 
         # Simple heuristic to determine success/failure based on output content
         if "FAILURES" in output or "Failed example" in output:
@@ -93,7 +99,7 @@ async def _run_doctests(module_path: str) -> dict:
             return {"status": "success", "output": summary, "details": output}
 
     except FileNotFoundError:
-        return {"status": "error", "message": f"Module file not found at {module_path}"}
+        return {"status": "error", "message": f"Module file not found at {modpath}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
