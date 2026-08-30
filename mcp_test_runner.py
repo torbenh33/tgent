@@ -69,39 +69,37 @@ async def _run_unit_tests(module_path: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-@mcp.resource("doctests://{modpath}")
-async def run_doctests(modpath: str) -> dict:
-    """Run doctests and return the results"""
+async def _run_subprocess(*cmd: str) -> dict:
+    """Run a subprocess command and return generic execution details."""
     try:
-        # Run doctest using the python module runner and capture output
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "doctest", "-v", modpath,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
-        output = stdout.decode().strip() + "\n" + stderr.decode().strip()
 
-        # Check return code first: non-zero indicates failure
-        if process.returncode != 0:
-            summary = f"FAILURE: Doctests failed (Exit Code {process.returncode}). Details:\n{output}"
-            return {"status": "error", "output": summary, "details": output}
+        stdout_text = stdout.decode().strip()
+        stderr_text = stderr.decode().strip()
+        output = "\n".join(part for part in [stdout_text, stderr_text] if part)
 
-        # Simple heuristic to determine success/failure based on output content
-        if "FAILURES" in output or "Failed example" in output:
-            summary = f"FAILURE: Doctests failed. Details:\n{output}"
-            return {"status": "error", "output": summary, "details": output}
-        elif "Ran 0 tests" in output and not output.strip():
-             # Handle case where module exists but has no doctests
-             summary = "SUCCESS: No doctests found or run."
-             return {"status": "success", "output": summary, "details": ""}
-        else:
-            summary = "SUCCESS: All doctests passed."
-            return {"status": "success", "output": summary, "details": output}
-
-    except FileNotFoundError:
-        return {"status": "error", "message": f"Module file not found at {modpath}"}
+        return {
+            "status": "success" if process.returncode == 0 else "error",
+            "returncode": process.returncode,
+            "output": output,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+        }
+    except FileNotFoundError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@mcp.resource("doctests://{modpath}")
+async def run_doctests(modpath: str) -> dict:
+    """Run doctests and return generic subprocess results."""
+    return await _run_subprocess(sys.executable, "-m", "doctest", "-v", modpath)
 
 
 
