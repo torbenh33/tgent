@@ -1,31 +1,37 @@
+import asyncio
 import os
-import requests
-from typing import List
 
-# --- Configuration ---
-OLLAMA_URL = "http://localhost:11434/api/generate"  # Adjust if Ollama is remote
-MODEL_NAME = "gemma4:e2b"  # Replace with the model you are running in Ollama
+from llm import LLMClient
+from test_subprocess import run_subprocess_checked
+
 PROJECT_ROOT = "/home/torbenh/cvs/tgent"  # Based on your workspace context
+
+_llm_client: LLMClient | None = None
+
+def get_llm_client() -> LLMClient:
+    """Returns a cached LLM client initialized from config.ini."""
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = LLMClient()
+    return _llm_client
+
 
 def get_ollama_summary(prompt: str) -> str:
     """
-    Sends a prompt to the Ollama API to get a summary.
+    Sends a prompt through llm.py (OpenAI-compatible client configured via config.ini).
     """
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": prompt,
-        "stream": False
-    }
-    headers = {"Content-Type": "application/json"}
+    messages = [
+        {"role": "system", "content": "You are an expert summarization assistant. Provide a concise summary of the given text."},
+        {"role": "user", "content": prompt},
+    ]
 
     try:
-        response = requests.post(OLLAMA_URL, json=payload, headers=headers)
-        response.raise_for_status()
-        result = response.json()
-        # Assuming the response structure contains the generated text
-        return result.get("response", "Error: No response received")
-    except requests.exceptions.RequestException as e:
-        return f"Error communicating with Ollama: {e}"
+        response = get_llm_client().chat(messages)
+        if response and getattr(response, "choices", None):
+            return response.choices[0].message.content or "Error: Empty response received"
+        return "Error: No response received"
+    except Exception as e:
+        return f"Error communicating with LLM backend: {e}"
 
 def add_git_note(sha1: str, note_content: str) -> bool:
     """
@@ -37,7 +43,6 @@ def add_git_note(sha1: str, note_content: str) -> bool:
     >>> add_git_note("2a755dced1a9967f5f50fd570960ee2b34c808dd", "Test note content")
     True
     """
-    import subprocess
     import tempfile
 
     # Create a temporary file to hold the note content
@@ -47,14 +52,11 @@ def add_git_note(sha1: str, note_content: str) -> bool:
 
     try:
         # Execute the command: git notes add -F <temp_file> <sha1>
-        result = subprocess.run(
-            ['git', 'notes', 'add', '-f', '-F', temp_filepath, sha1], 
-            check=True, 
-            capture_output=True, 
-            text=True
+        asyncio.run(
+            run_subprocess_checked('git', 'notes', 'add', '-f', '-F', temp_filepath, sha1)
         )
         return True
-    except subprocess.CalledProcessError as e:
+    except Exception:
         return False
     finally:
         # Clean up the temporary file
@@ -77,21 +79,17 @@ def get_sha1_for_path(pathname: str) -> str | None:
     >>> get_sha1_for_path("nonexistent/file.txt")
     Warning: Could not find SHA-1 for path 'nonexistent/file.txt'. Is it tracked by Git?
     """
-    import subprocess
     try:
         # Use git rev-parse --verify to get the full commit SHA of the current version of the file
-        result = subprocess.run(
-                ['git', 'rev-parse', '--verify', ':'+pathname], 
-            check=True, 
-            capture_output=True, 
-            text=True
+        result = asyncio.run(
+            run_subprocess_checked('git', 'rev-parse', '--verify', ':' + pathname)
         )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError:
+        return result["stdout"].strip()
+    except RuntimeError:
         # This usually means the file is not tracked or does not exist in the index/repo
         print(f"Warning: Could not find SHA-1 for path '{pathname}'. Is it tracked by Git?")
         return None
-    except FileNotFoundError:
+    except Exception:
         # git command itself might not be found
         print("Error: 'git' command not found. Ensure Git is installed and in PATH.")
         return None
@@ -105,9 +103,8 @@ def summarize_file(filepath: str) -> str:
             content = f.read()
         
         # Construct the prompt for the LLM
-        system_prompt = "You are an expert summarization assistant. Provide a concise summary of the following text."
-        user_prompt = f"{system_prompt}\n\nFile Content:\n---\n{content}"
-        
+        user_prompt = f"File path: {filepath}\n\nFile Content:\n---\n{content}"
+
         print(f"Summarizing: {filepath}...")
         summary = get_ollama_summary(user_prompt)
         return summary
