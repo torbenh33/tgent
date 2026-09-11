@@ -27,7 +27,6 @@ async def run_subprocess(*cmd: str) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-
 async def run_subprocess_checked(*cmd: str) -> dict:
     """Run a subprocess command and raise RuntimeError on non-zero exit status."""
     result = await run_subprocess(*cmd)
