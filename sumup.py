@@ -1,10 +1,11 @@
-import asyncio
+import argparse
 import os
+import subprocess
 
+from git_notes import add_git_note_for_path, get_git_note_for_path
 from llm import LLMClient
-from test_subprocess import run_subprocess_checked
 
-PROJECT_ROOT = "/home/torbenh/cvs/tgent"  # Based on your workspace context
+PROJECT_ROOT = os.getcwd()
 
 _llm_client: LLMClient | None = None
 
@@ -19,6 +20,7 @@ def get_llm_client() -> LLMClient:
 def get_ollama_summary(prompt: str) -> str:
     """
     Sends a prompt through llm.py (OpenAI-compatible client configured via config.ini).
+    Raises RuntimeError on backend/config/API errors.
     """
     messages = [
         {"role": "system", "content": "You are an expert summarization assistant. Provide a concise summary of the given text."},
@@ -27,93 +29,79 @@ def get_ollama_summary(prompt: str) -> str:
 
     try:
         response = get_llm_client().chat(messages)
-        if response and getattr(response, "choices", None):
-            return response.choices[0].message.content or "Error: Empty response received"
-        return "Error: No response received"
-    except Exception as e:
-        return f"Error communicating with LLM backend: {e}"
+        if not response or not getattr(response, "choices", None):
+            raise RuntimeError("No response received")
 
-def add_git_note(sha1: str, note_content: str) -> bool:
-    """
-    Adds a git note (comment) to a specified commit SHA-1.
-    Uses temporary files for safe interaction with 'git notes'.
-
-    >>> # Assuming a valid SHA-1 and note content are provided
-    >>> # Note: This test requires git to be configured correctly in the environment.
-    >>> add_git_note("2a755dced1a9967f5f50fd570960ee2b34c808dd", "Test note content")
-    True
-    """
-    import tempfile
-
-    # Create a temporary file to hold the note content
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
-        tmp.write(note_content)
-        temp_filepath = tmp.name
-
-    try:
-        # Execute the command: git notes add -F <temp_file> <sha1>
-        asyncio.run(
-            run_subprocess_checked('git', 'notes', 'add', '-f', '-F', temp_filepath, sha1)
-        )
-        return True
-    except Exception:
-        return False
-    finally:
-        # Clean up the temporary file
-        import os
-        os.remove(temp_filepath)
-
-def get_sha1_for_path(pathname: str) -> str | None:
-    """
-    Retrieves the Git SHA-1 hash for a given file path relative to the repository root.
-    Returns the SHA-1 string on success, or None if the file is not tracked or an error occurs.
-
-    >>> # NOTE: These tests require the current directory to be a valid Git repository 
-    >>> # with tracked files for successful execution.
-    >>> # Assuming 'README.md' exists and is tracked in the current git repo state.
-    >>> get_sha1_for_path("README.md")
-    '2a755dced1a9967f5f50fd570960ee2b34c808dd'
-
-    >>> # Assuming 'nonexistent/file.txt' is not tracked or does not exist.
-    >>> # The function prints a warning and returns None.
-    >>> get_sha1_for_path("nonexistent/file.txt")
-    Warning: Could not find SHA-1 for path 'nonexistent/file.txt'. Is it tracked by Git?
-    """
-    try:
-        # Use git rev-parse --verify to get the full commit SHA of the current version of the file
-        result = asyncio.run(
-            run_subprocess_checked('git', 'rev-parse', '--verify', ':' + pathname)
-        )
-        return result["stdout"].strip()
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("Empty response received")
+        return content
     except RuntimeError:
-        # This usually means the file is not tracked or does not exist in the index/repo
-        print(f"Warning: Could not find SHA-1 for path '{pathname}'. Is it tracked by Git?")
-        return None
-    except Exception:
-        # git command itself might not be found
-        print("Error: 'git' command not found. Ensure Git is installed and in PATH.")
-        return None
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Error communicating with LLM backend: {e}") from e
 
-def summarize_file(filepath: str) -> str:
+
+def remove_git_note_for_path(relative_path: str) -> str:
+    """Removes a git note for the blob at HEAD:<relative_path>."""
+    try:
+        blob = subprocess.run(
+            ["git", "rev-parse", f"HEAD:{relative_path}"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+
+        subprocess.run(
+            ["git", "notes", "remove", blob],
+            cwd=PROJECT_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        return "removed"
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        if "no note found" in stderr.lower():
+            return "none"
+        return f"error: {stderr or e}"
+    except Exception as e:
+        return f"error: {e}"
+
+
+def summarize_file(filepath: str, ignore_old_notes: bool = False) -> str:
     """
-    Reads a file and sends its content to the LLM for summarization.
+    Reads a file and summarizes it with the LLM unless a git note already exists
+    for the current blob of the path. Summaries are cached in git notes.
     """
     try:
+        relative_path = os.path.relpath(filepath, PROJECT_ROOT)
+
+        # Reuse summary if a git note already exists for the current blob.
+        if not ignore_old_notes:
+            existing_note = get_git_note_for_path(relative_path)
+            if existing_note:
+                print(f"Reusing git note summary: {relative_path}")
+                return existing_note
+
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        # Construct the prompt for the LLM
-        user_prompt = f"File path: {filepath}\n\nFile Content:\n---\n{content}"
 
-        print(f"Summarizing: {filepath}...")
+        user_prompt = f"File path: {relative_path}\n\nFile Content:\n---\n{content}"
+
+        print(f"Summarizing: {relative_path}...")
         summary = get_ollama_summary(user_prompt)
+        add_git_note_for_path(relative_path, summary)
         return summary
     except FileNotFoundError:
         return f"Error: File not found at {filepath}"
+    except RuntimeError:
+        raise
     except Exception as e:
         return f"An unexpected error occurred while processing {filepath}: {e}"
 
-def process_directory(root_dir: str) -> dict:
+def process_directory(root_dir: str, ignore_old_notes: bool = False, clear_notes_only: bool = False) -> dict:
     """
     Recursively traverses the directory, summarizes files, and aggregates directory summaries.
     """
@@ -121,14 +109,25 @@ def process_directory(root_dir: str) -> dict:
     directory_summaries = {}
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
+        # Ignore hidden directories and files
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        visible_filenames = [f for f in filenames if not f.startswith('.')]
+
         # 1. Process file summaries
-        for filename in filenames:
+        for filename in visible_filenames:
             filepath = os.path.join(dirpath, filename)
-            summary = summarize_file(filepath)
-            
+            relative_path = os.path.relpath(filepath, PROJECT_ROOT)
+
+            if clear_notes_only:
+                status = remove_git_note_for_path(relative_path)
+                print(f"Clear note [{status}]: {relative_path}")
+                continue
+
+            summary = summarize_file(filepath, ignore_old_notes=ignore_old_notes)
+
             # Store file-level summary (optional, but useful)
             file_summaries[filepath] = summary
-            
+
             # 2. Aggregate summaries for the directory
             if dirpath not in directory_summaries:
                 directory_summaries[dirpath] = []
@@ -140,24 +139,48 @@ def process_directory(root_dir: str) -> dict:
     }
 
 if __name__ == "__main__":
-    print(f"Starting project traversal in: {PROJECT_ROOT}")
-    
-    results = process_directory(PROJECT_ROOT)
-    
-    print("\n" + "="*50)
-    print("FILE SUMMARIES:")
-    print("="*50)
-    for path, summary in results["file_summaries"].items():
-        print(f"\n[FILE]: {path}")
-        print("-" * 20)
-        print(summary[:500] + "..." if len(summary) > 500 else summary)
+    parser = argparse.ArgumentParser(description="Summarize project files and cache summaries in git notes.")
+    parser.add_argument(
+        "--ignore-old-notes",
+        action="store_true",
+        help="Do not reuse existing git notes; regenerate summaries.",
+    )
+    parser.add_argument(
+        "--clear-notes-only",
+        action="store_true",
+        help="Remove git notes for traversed files and exit without summarization.",
+    )
+    args = parser.parse_args()
 
-    print("\n" + "="*50)
-    print("DIRECTORY SUMMARIES (Recursive):")
-    print("="*50)
-    for directory, summaries in results["directory_summaries"].items():
-        print(f"\n[DIRECTORY]: {directory}")
-        print("=" * 30)
-        for summary_block in summaries:
-            print(summary_block)
-        print("\n" + "#" * 40)
+    print(f"Starting project traversal in: {PROJECT_ROOT}")
+
+    try:
+        results = process_directory(
+            PROJECT_ROOT,
+            ignore_old_notes=args.ignore_old_notes,
+            clear_notes_only=args.clear_notes_only,
+        )
+    except RuntimeError as e:
+        print(f"Fatal: {e}")
+        raise SystemExit(1)
+
+    if args.clear_notes_only:
+        print("Done clearing notes.")
+    else:
+        print("\n" + "="*50)
+        print("FILE SUMMARIES:")
+        print("="*50)
+        for path, summary in results["file_summaries"].items():
+            print(f"\n[FILE]: {path}")
+            print("-" * 20)
+            print(summary[:500] + "..." if len(summary) > 500 else summary)
+
+        print("\n" + "="*50)
+        print("DIRECTORY SUMMARIES (Recursive):")
+        print("="*50)
+        for directory, summaries in results["directory_summaries"].items():
+            print(f"\n[DIRECTORY]: {directory}")
+            print("=" * 30)
+            for summary_block in summaries:
+                print(summary_block)
+            print("\n" + "#" * 40)
