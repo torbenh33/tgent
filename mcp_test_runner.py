@@ -9,7 +9,8 @@ mcp = FastMCP("TestRunnerService")
 
 @mcp.resource("unittests://{modpath}")
 async def run_unittests(modpath: str) -> dict:
-    """Run unittest discovery for a given test module file."""
+    """Run unittest discovery for a given test module file.
+       + some stuff"""
     if not modpath:
         return {"status": "error", "message": "Module path must be provided."}
     if not os.path.exists(modpath):
