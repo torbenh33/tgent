@@ -569,5 +569,70 @@ def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
     }
 
 
+@mcp.tool()
+def create_feature_branch(
+    branch_name: str,
+    repo_path: str = ".",
+    from_ref: str = "HEAD",
+) -> dict[str, Any]:
+    """Create and switch to a new feature branch in the target repository."""
+    clean_branch_name = branch_name.strip() if isinstance(branch_name, str) else ""
+    if not clean_branch_name:
+        return {"status": "error", "message": "Branch name must be provided."}
 if __name__ == "__main__":
+    if clean_branch_name in {"main", "master"}:
+        return {
+            "status": "error",
+            "message": "Refusing to create or switch to reserved default branch name.",
+            "repo_path": repo_path,
+            "branch": clean_branch_name,
+        }
     mcp.run()
+    current_branch_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if current_branch_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to inspect current branch.",
+            "stderr": current_branch_proc.stderr,
+            "repo_path": repo_path,
+        }
+    current_branch = current_branch_proc.stdout.strip()
+    check_proc = _git_command(repo_path, ["show-ref", "--verify", "--quiet", f"refs/heads/{clean_branch_name}"])
+    if check_proc.returncode == 0:
+        return {
+            "status": "error",
+            "message": "Branch already exists.",
+            "repo_path": repo_path,
+            "branch": clean_branch_name,
+            "current_branch": current_branch,
+        }
+    if check_proc.returncode not in (0, 1):
+        return {
+            "status": "error",
+            "message": "Failed to check if branch exists.",
+            "stderr": check_proc.stderr,
+            "repo_path": repo_path,
+            "branch": clean_branch_name,
+        }
+    target_ref = from_ref.strip() if isinstance(from_ref, str) and from_ref.strip() else "HEAD"
+    create_proc = _git_command(repo_path, ["switch", "-c", clean_branch_name, target_ref])
+    if create_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to create feature branch.",
+            "stdout": create_proc.stdout,
+            "stderr": create_proc.stderr,
+            "repo_path": repo_path,
+            "branch": clean_branch_name,
+            "from_ref": target_ref,
+        }
+    return {
+        "status": "ok",
+        "message": "Feature branch created and checked out.",
+        "repo_path": repo_path,
+        "branch": clean_branch_name,
+        "from_ref": target_ref,
+        "previous_branch": current_branch,
+        "stdout": create_proc.stdout,
+        "stderr": create_proc.stderr,
+    }
