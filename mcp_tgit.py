@@ -21,6 +21,23 @@ async def git_diff_context() -> dict:
 
 _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
+
+def _render_diff_with_delta(diff_text: str) -> tuple[str, str | None]:
+    if not diff_text:
+        return "", None
+
+    delta_proc = subprocess.run(
+        ["delta", "-n", "--hunk-header-style=omit", "--paging=never"],
+        input=diff_text,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if delta_proc.returncode != 0:
+        return diff_text, delta_proc.stderr
+    return delta_proc.stdout, None
+
+
 )
 
 
@@ -75,6 +92,39 @@ def _build_selected_patch(
                     "raw": raw,
                     "kind": "+",
                     "old_ref": None,
+
+    unstaged_rendered, unstaged_delta_err = _render_diff_with_delta(unstaged_proc.stdout)
+    staged_rendered, staged_delta_err = _render_diff_with_delta(staged_proc.stdout)
+
+    if unstaged_delta_err:
+        errors.append(
+            {
+                "command": ["delta", "-n", "--hunk-header-style=omit"],
+                "stderr": unstaged_delta_err,
+                "context": "unstaged_diff",
+            }
+        )
+    if staged_delta_err:
+        errors.append(
+            {
+                "command": ["delta", "-n", "--hunk-header-style=omit"],
+                "stderr": staged_delta_err,
+                "context": "staged_diff",
+            }
+        )
+
+    branch_name = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+    detached = branch_name == "HEAD"
+
+    result: dict[str, Any] = {
+        "repo_path": repo_path,
+        "branch": None if detached or not branch_name else branch_name,
+        "detached": detached,
+        "head_sha": head_proc.stdout.strip() if head_proc.returncode == 0 else None,
+        "unstaged_diff": f"### Unstaged changes\n{unstaged_rendered}",
+        "staged_diff": f"### Staged changes\n{staged_rendered}",
+    }
+    if submodule_state is not None:
                     "new_ref": new_cur,
                     "old_before": old_cur,
                     "new_before": new_cur,
