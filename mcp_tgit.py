@@ -843,7 +843,51 @@ def stash_changes(message: str = "", include_untracked: bool = False, repo_path:
 
 
 @mcp.tool()
-def commit_staged(message: str, repo_path: str) -> dict[str, Any]:
+def unstash_changes(stash_ref: str = "stash@{0}", repo_path: str = ".", pop: bool = True) -> dict[str, Any]:
+    """Apply stashed changes from a stash ref. Defaults to popping stash@{0}."""
+    clean_stash_ref = stash_ref.strip() if isinstance(stash_ref, str) and stash_ref.strip() else "stash@{0}"
+
+    stash_check = _git_command(repo_path, ["stash", "list"])
+    if stash_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to inspect stash list.",
+            "stderr": stash_check.stderr,
+            "repo_path": repo_path,
+        }
+    if not stash_check.stdout.strip():
+        return {
+            "status": "error",
+            "message": "No stashes available.",
+            "repo_path": repo_path,
+        }
+
+    action = "pop" if pop else "apply"
+    unstash_proc = _git_command(repo_path, ["stash", action, clean_stash_ref])
+    if unstash_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": f"git stash {action} failed.",
+            "stdout": unstash_proc.stdout,
+            "stderr": unstash_proc.stderr,
+            "repo_path": repo_path,
+            "stash_ref": clean_stash_ref,
+            "action": action,
+        }
+
+    return {
+        "status": "ok",
+        "message": f"Stash {clean_stash_ref} {action} succeeded.",
+        "repo_path": repo_path,
+        "stash_ref": clean_stash_ref,
+        "action": action,
+        "stdout": unstash_proc.stdout,
+        "stderr": unstash_proc.stderr,
+    }
+
+
+@mcp.tool()
+def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
     """Commit currently staged changes using git commit."""
     if not message or not message.strip():
         return {"status": "error", "message": "Commit message must be provided."}
