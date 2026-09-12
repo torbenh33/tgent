@@ -587,7 +587,62 @@ def unstage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = "") -> dict[str, Any]:
+def fetch_remote(
+    remote: str = "origin",
+    repo_path: str = ".",
+    prune: bool = False,
+    tags: bool = False,
+    recursive: bool = True,
+) -> dict[str, Any]:
+    """Fetch updates from a git remote. Defaults to origin and fetches submodules recursively by default."""
+    clean_remote = remote.strip() if isinstance(remote, str) else ""
+    if not clean_remote:
+        return {"status": "error", "message": "Remote name must be provided."}
+
+    remote_check = _git_command(repo_path, ["remote", "get-url", clean_remote])
+    if remote_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Remote does not exist.",
+            "repo_path": repo_path,
+            "remote": clean_remote,
+            "stderr": remote_check.stderr,
+        }
+
+    cmd = ["fetch"]
+    if prune:
+        cmd.append("--prune")
+    if tags:
+        cmd.append("--tags")
+    if recursive:
+        cmd.append("--recurse-submodules")
+    cmd.append(clean_remote)
+
+    fetch_proc = _git_command(repo_path, cmd)
+    if fetch_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "git fetch failed.",
+            "stdout": fetch_proc.stdout,
+            "stderr": fetch_proc.stderr,
+            "repo_path": repo_path,
+            "remote": clean_remote,
+            "command": cmd,
+        }
+
+    return {
+        "status": "ok",
+        "message": "Fetch completed.",
+        "repo_path": repo_path,
+        "remote": clean_remote,
+        "command": cmd,
+        "stdout": fetch_proc.stdout,
+        "stderr": fetch_proc.stderr,
+    }
+
+
+@mcp.tool()
+def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = ".") -> dict[str, Any]:
     """Stash local changes using git stash push."""
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
