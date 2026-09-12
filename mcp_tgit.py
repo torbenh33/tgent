@@ -159,6 +159,24 @@ def _list_submodules(repo_path: str) -> list[dict[str, str]]:
     return submodules
 
 
+def _ahead_behind_counts(repo_path: str, base_ref: str, head_ref: str = "HEAD") -> tuple[int | None, int | None, str | None]:
+    proc = _git_command(repo_path, ["rev-list", "--left-right", "--count", f"{base_ref}...{head_ref}"])
+    if proc.returncode != 0:
+        return None, None, proc.stderr
+
+    parts = proc.stdout.strip().split()
+    if len(parts) != 2:
+        return None, None, "Unexpected output from rev-list --left-right --count."
+
+    try:
+        behind = int(parts[0])
+        ahead = int(parts[1])
+    except ValueError:
+        return None, None, "Failed to parse ahead/behind counts."
+
+    return behind, ahead, None
+
+
 
 def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str, Any]:
     target_repo = _resolve_repo_path(repo_path)
@@ -223,11 +241,49 @@ def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str
     has_unstaged_changes = bool(unstaged_proc.stdout.strip())
     has_staged_changes = bool(staged_proc.stdout.strip())
 
+    upstream_ref: str | None = None
+    comparison_ref: str | None = None
+    comparison_ref_kind: str | None = None
+    behind = 0
+    ahead = 0
+
+    upstream_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+    if upstream_proc.returncode == 0:
+        upstream_ref = upstream_proc.stdout.strip()
+        comparison_ref = upstream_ref
+        comparison_ref_kind = "upstream"
+    elif not detached and branch_name:
+        fallback_remote_ref = f"origin/{branch_name}"
+        fallback_check = _git_command(repo_path, ["show-ref", "--verify", "--quiet", f"refs/remotes/{fallback_remote_ref}"])
+        if fallback_check.returncode == 0:
+            comparison_ref = fallback_remote_ref
+            comparison_ref_kind = "origin_fallback"
+
+    if comparison_ref:
+        behind_count, ahead_count, compare_err = _ahead_behind_counts(repo_path, comparison_ref)
+        if compare_err:
+            errors.append(
+                {
+                    "command": ["rev-list", "--left-right", "--count", f"{comparison_ref}...HEAD"],
+                    "stderr": compare_err,
+                }
+            )
+        else:
+            behind = behind_count or 0
+            ahead = ahead_count or 0
+
     result: dict[str, Any] = {
         "repo_path": target_repo,
         "branch": None if detached or not branch_name else branch_name,
         "detached": detached,
         "head_sha": head_proc.stdout.strip() if head_proc.returncode == 0 else None,
+        "upstream": upstream_ref,
+        "comparison_ref": comparison_ref,
+        "comparison_ref_kind": comparison_ref_kind,
+        "behind_count": behind,
+        "ahead_count": ahead,
+        "needs_update": behind > 0,
+        "diverged": behind > 0 and ahead > 0,
         "unstaged_diff": unstaged_rendered,
         "staged_diff": staged_rendered,
         "has_unstaged_changes": has_unstaged_changes,
