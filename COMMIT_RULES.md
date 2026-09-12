@@ -21,6 +21,14 @@
 - One commit, one intent.
 - If one file contains multiple intents, use partial staging and separate commits.
 
+## Agent execution defaults (token-efficient workflow)
+
+- Default to action when user intent is clear: stage, write commit message, and commit without extra confirmation.
+- If ambiguity exists, ask at most one concise clarification question.
+- If a safe default exists, proceed with it and briefly state what was assumed.
+- Generate commit subject/body directly from staged diff and current subject constraints.
+- Batch related actions in one turn whenever possible (for example: stage + commit).
+
 ## Line-number selection for partial staging
 
 - Prefer delta-rendered line numbers when they are clearly mapped to the target changed line.
