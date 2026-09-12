@@ -117,13 +117,19 @@ def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str
     branch_name = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
     detached = branch_name == "HEAD"
 
+    has_unstaged_changes = bool(unstaged_proc.stdout.strip())
+    has_staged_changes = bool(staged_proc.stdout.strip())
+
     result: dict[str, Any] = {
         "repo_path": repo_path,
         "branch": None if detached or not branch_name else branch_name,
         "detached": detached,
         "head_sha": head_proc.stdout.strip() if head_proc.returncode == 0 else None,
-        "unstaged_diff": f"### Unstaged changes\n{unstaged_rendered}",
-        "staged_diff": f"### Staged changes\n{staged_rendered}",
+        "unstaged_diff": unstaged_rendered,
+        "staged_diff": staged_rendered,
+        "has_unstaged_changes": has_unstaged_changes,
+        "has_staged_changes": has_staged_changes,
+        "is_clean": not has_unstaged_changes and not has_staged_changes,
     }
     if submodule_state is not None:
         result["submodule_state"] = submodule_state
