@@ -73,6 +73,67 @@ def _read_commit_rules(repo_path: str) -> dict[str, Any]:
     }
 
 
+def _repo_file_status(repo_path: str, submodule_state: str | None = None) -> dict[str, Any]:
+    proc = _git_command(repo_path, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if proc.returncode != 0:
+        result: dict[str, Any] = {
+            "repo_path": repo_path,
+            "files": [],
+            "has_changes": False,
+            "errors": [
+                {
+                    "command": ["status", "--porcelain=v1", "--untracked-files=all"],
+                    "stderr": proc.stderr,
+                }
+            ],
+        }
+        if submodule_state is not None:
+            result["submodule_state"] = submodule_state
+        return result
+
+    files: list[dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        if len(line) < 3:
+            continue
+
+        xy = line[:2]
+        payload = line[3:]
+
+        old_path: str | None = None
+        path = payload
+        if " -> " in payload:
+            old_path, path = payload.split(" -> ", 1)
+
+        index_status = xy[0]
+        worktree_status = xy[1]
+
+        entry: dict[str, Any] = {
+            "path": path,
+            "xy": xy,
+            "index_status": index_status,
+            "worktree_status": worktree_status,
+            "staged": index_status not in {" ", "?", "!"},
+            "unstaged": worktree_status not in {" ", "?", "!"},
+            "untracked": xy == "??",
+            "ignored": xy == "!!",
+        }
+        if old_path is not None:
+            entry["old_path"] = old_path
+
+        files.append(entry)
+
+    result = {
+        "repo_path": repo_path,
+        "files": files,
+        "has_changes": bool(files),
+    }
+    if submodule_state is not None:
+        result["submodule_state"] = submodule_state
+    return result
+
+
 def _list_submodules() -> list[dict[str, str]]:
     proc = _git_command(".", ["submodule", "status", "--recursive"])
     if proc.returncode != 0:
@@ -189,6 +250,19 @@ async def git_diff_context() -> dict:
 async def git_commit_rules() -> dict:
     """Return repository commit rules from COMMIT_RULES.md if present."""
     return _read_commit_rules(".")
+
+
+@mcp.resource("git://status")
+async def git_status_context() -> dict:
+    """Return porcelain git status entries for all files in the superproject and all submodules."""
+    repos = [_repo_file_status(".")]
+    for submodule in _list_submodules():
+        repos.append(_repo_file_status(submodule["path"], submodule["state"]))
+
+    return {
+        "status": "ok",
+        "repos": repos,
+    }
 
 
 _HUNK_HEADER_RE = re.compile(
