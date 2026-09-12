@@ -579,7 +579,6 @@ def create_feature_branch(
     clean_branch_name = branch_name.strip() if isinstance(branch_name, str) else ""
     if not clean_branch_name:
         return {"status": "error", "message": "Branch name must be provided."}
-if __name__ == "__main__":
     if clean_branch_name in {"main", "master"}:
         return {
             "status": "error",
@@ -587,7 +586,6 @@ if __name__ == "__main__":
             "repo_path": repo_path,
             "branch": clean_branch_name,
         }
-    mcp.run()
     current_branch_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
     if current_branch_proc.returncode != 0:
         return {
@@ -636,3 +634,6 @@ if __name__ == "__main__":
         "stdout": create_proc.stdout,
         "stderr": create_proc.stderr,
     }
+
+if __name__ == "__main__":
+    mcp.run()
