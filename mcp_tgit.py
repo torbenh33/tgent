@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 from typing import Any
@@ -7,10 +8,14 @@ from fastmcp import FastMCP
 mcp = FastMCP("tgit")
 
 
+def _resolve_repo_path(repo_path: str | None) -> str:
+    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
+    return candidate or "."
+
 
 def _git_command(repo_path: str, args: list[str]) -> subprocess.CompletedProcess[str]:
     cmd = ["git"]
-    target_repo = repo_path.strip() if isinstance(repo_path, str) and repo_path.strip() else "."
+    target_repo = _resolve_repo_path(repo_path)
     cmd.extend(["-C", target_repo])
     cmd.extend(args)
     return subprocess.run(
@@ -40,8 +45,8 @@ def _render_diff_with_delta(diff_text: str) -> tuple[str, str | None]:
 
 
 def _read_commit_rules(repo_path: str) -> dict[str, Any]:
-    target_repo = repo_path.strip() if isinstance(repo_path, str) and repo_path.strip() else "."
-    rules_path = f"{target_repo}/COMMIT_RULES.md"
+    target_repo = _resolve_repo_path(repo_path)
+    rules_path = os.path.join(target_repo, "COMMIT_RULES.md")
 
     try:
         with open(rules_path, "r", encoding="utf-8") as handle:
@@ -74,10 +79,11 @@ def _read_commit_rules(repo_path: str) -> dict[str, Any]:
 
 
 def _repo_file_status(repo_path: str, submodule_state: str | None = None) -> dict[str, Any]:
-    proc = _git_command(repo_path, ["status", "--porcelain=v1", "--untracked-files=all"])
+    target_repo = _resolve_repo_path(repo_path)
+    proc = _git_command(target_repo, ["status", "--porcelain=v1", "--untracked-files=all"])
     if proc.returncode != 0:
         result: dict[str, Any] = {
-            "repo_path": repo_path,
+            "repo_path": target_repo,
             "files": [],
             "has_changes": False,
             "errors": [
@@ -125,7 +131,7 @@ def _repo_file_status(repo_path: str, submodule_state: str | None = None) -> dic
         files.append(entry)
 
     result = {
-        "repo_path": repo_path,
+        "repo_path": target_repo,
         "files": files,
         "has_changes": bool(files),
     }
@@ -134,8 +140,9 @@ def _repo_file_status(repo_path: str, submodule_state: str | None = None) -> dic
     return result
 
 
-def _list_submodules() -> list[dict[str, str]]:
-    proc = _git_command(".", ["submodule", "status", "--recursive"])
+def _list_submodules(repo_path: str) -> list[dict[str, str]]:
+    base_repo = _resolve_repo_path(repo_path)
+    proc = _git_command(base_repo, ["submodule", "status", "--recursive"])
     if proc.returncode != 0:
         return []
 
@@ -148,16 +155,17 @@ def _list_submodules() -> list[dict[str, str]]:
         parts = payload.split()
         if len(parts) < 2:
             continue
-        submodules.append({"path": parts[1], "state": state})
+        submodules.append({"path": os.path.join(base_repo, parts[1]), "state": state})
     return submodules
 
 
 
 def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str, Any]:
-    branch_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-    head_proc = _git_command(repo_path, ["rev-parse", "HEAD"])
-    unstaged_proc = _git_command(repo_path, ["diff", "--no-color", "-U0"])
-    staged_proc = _git_command(repo_path, ["diff", "--cached", "--no-color", "-U0"])
+    target_repo = _resolve_repo_path(repo_path)
+    branch_proc = _git_command(target_repo, ["rev-parse", "--abbrev-ref", "HEAD"])
+    head_proc = _git_command(target_repo, ["rev-parse", "HEAD"])
+    unstaged_proc = _git_command(target_repo, ["diff", "--no-color", "-U0"])
+    staged_proc = _git_command(target_repo, ["diff", "--cached", "--no-color", "-U0"])
 
     errors: list[dict[str, Any]] = []
     if branch_proc.returncode != 0:
@@ -216,7 +224,7 @@ def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str
     has_staged_changes = bool(staged_proc.stdout.strip())
 
     result: dict[str, Any] = {
-        "repo_path": repo_path,
+        "repo_path": target_repo,
         "branch": None if detached or not branch_name else branch_name,
         "detached": detached,
         "head_sha": head_proc.stdout.strip() if head_proc.returncode == 0 else None,
@@ -237,7 +245,7 @@ def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str
 async def git_diff_context() -> dict:
     """Return staged/unstaged git diff context for the superproject and all submodules. The diffs are formatted using delta. The left column is the old file, and the right column is the staged new file. Keep this in mind to figure out in which direction the changes are aplied."""
     repos = [_repo_status(".")]
-    for submodule in _list_submodules():
+    for submodule in _list_submodules("."):
         repos.append(_repo_status(submodule["path"], submodule["state"]))
 
     return {
@@ -256,7 +264,7 @@ async def git_commit_rules() -> dict:
 async def git_status_context() -> dict:
     """Return porcelain git status entries for all files in the superproject and all submodules."""
     repos = [_repo_file_status(".")]
-    for submodule in _list_submodules():
+    for submodule in _list_submodules("."):
         repos.append(_repo_file_status(submodule["path"], submodule["state"]))
 
     return {
@@ -392,11 +400,13 @@ def stage_lines(
     path: str,
     old_line_numbers: list[int],
     new_line_numbers: list[int],
-    repo_path: str = ".",
+    repo_path: str,
 ) -> dict[str, Any]:
     """Stage selected old/new changed line numbers from one file using git apply --cached."""
     if not path:
         return {"status": "error", "message": "Path must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
 
     selected_old_lines = {int(line) for line in old_line_numbers if int(line) > 0}
     selected_new_lines = {int(line) for line in new_line_numbers if int(line) > 0}
@@ -457,11 +467,13 @@ def unstage_lines(
     path: str,
     old_line_numbers: list[int],
     new_line_numbers: list[int],
-    repo_path: str = ".",
+    repo_path: str,
 ) -> dict[str, Any]:
     """Unstage selected old/new changed line numbers from one file using reverse git apply --cached."""
     if not path:
         return {"status": "error", "message": "Path must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
 
     selected_old_lines = {int(line) for line in old_line_numbers if int(line) > 0}
     selected_new_lines = {int(line) for line in new_line_numbers if int(line) > 0}
@@ -517,8 +529,11 @@ def unstage_lines(
 
 
 @mcp.tool()
-def stage_files(paths: list[str], repo_path: str = ".") -> dict[str, Any]:
+def stage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
     """Stage entire files using git add for a provided list of file paths."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
     selected_paths = [p for p in paths if isinstance(p, str) and p.strip()]
     if not selected_paths:
         return {"status": "error", "message": "At least one file path must be provided."}
@@ -543,8 +558,11 @@ def stage_files(paths: list[str], repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
-def unstage_files(paths: list[str], repo_path: str = ".") -> dict[str, Any]:
+def unstage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
     """Unstage entire files using git restore --staged for a provided list of file paths."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
     selected_paths = [p for p in paths if isinstance(p, str) and p.strip()]
     if not selected_paths:
         return {"status": "error", "message": "At least one file path must be provided."}
@@ -569,8 +587,11 @@ def unstage_files(paths: list[str], repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
-def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = ".") -> dict[str, Any]:
+def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = "") -> dict[str, Any]:
     """Stash local changes using git stash push."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
     has_changes = _git_command(repo_path, ["status", "--porcelain"])
     if has_changes.returncode != 0:
         return {
@@ -608,10 +629,12 @@ def stash_changes(message: str = "", include_untracked: bool = False, repo_path:
 
 
 @mcp.tool()
-def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
+def commit_staged(message: str, repo_path: str) -> dict[str, Any]:
     """Commit currently staged changes using git commit."""
     if not message or not message.strip():
         return {"status": "error", "message": "Commit message must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
 
     has_staged = _git_command(repo_path, ["diff", "--cached", "--quiet"])
     if has_staged.returncode == 0:
@@ -624,7 +647,7 @@ def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
             "repo_path": repo_path,
         }
 
-    commit_proc = _git_command(repo_path, ["commit", "-m", message.strip()])
+    commit_proc = _git_command(repo_path, ["commit", "-s", "-m", message.strip()])
     if commit_proc.returncode != 0:
         return {
             "status": "error",
@@ -646,13 +669,15 @@ def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
 @mcp.tool()
 def create_feature_branch(
     branch_name: str,
-    repo_path: str = ".",
+    repo_path: str,
     from_ref: str = "HEAD",
 ) -> dict[str, Any]:
     """Create and switch to a new feature branch in the target repository."""
     clean_branch_name = branch_name.strip() if isinstance(branch_name, str) else ""
     if not clean_branch_name:
         return {"status": "error", "message": "Branch name must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
     if clean_branch_name in {"main", "master"}:
         return {
             "status": "error",
