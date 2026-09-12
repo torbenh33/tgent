@@ -20,3 +20,9 @@
 
 - One commit, one intent.
 - If one file contains multiple intents, use partial staging and separate commits.
+
+## Line-number selection for partial staging
+
+- Prefer delta-rendered line numbers when they are clearly mapped to the target changed line.
+- If mapping is ambiguous or resource output may be stale, derive line numbers from raw hunk coordinates via `git diff -U0` (`+N`/`-N`).
+- Do not guess line numbers from unrelated visual numbering.
