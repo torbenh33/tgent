@@ -39,6 +39,40 @@ def _render_diff_with_delta(diff_text: str) -> tuple[str, str | None]:
 
 
 
+def _read_commit_rules(repo_path: str) -> dict[str, Any]:
+    target_repo = repo_path.strip() if isinstance(repo_path, str) and repo_path.strip() else "."
+    rules_path = f"{target_repo}/COMMIT_RULES.md"
+
+    try:
+        with open(rules_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except FileNotFoundError:
+        return {
+            "status": "ok",
+            "repo_path": target_repo,
+            "rules_path": "COMMIT_RULES.md",
+            "exists": False,
+            "content": "",
+        }
+    except OSError as err:
+        return {
+            "status": "error",
+            "repo_path": target_repo,
+            "rules_path": "COMMIT_RULES.md",
+            "exists": False,
+            "message": "Failed to read commit rules.",
+            "error": str(err),
+        }
+
+    return {
+        "status": "ok",
+        "repo_path": target_repo,
+        "rules_path": "COMMIT_RULES.md",
+        "exists": True,
+        "content": content,
+    }
+
+
 def _list_submodules() -> list[dict[str, str]]:
     proc = _git_command(".", ["submodule", "status", "--recursive"])
     if proc.returncode != 0:
@@ -149,6 +183,12 @@ async def git_diff_context() -> dict:
         "status": "ok",
         "repos": repos,
     }
+
+
+@mcp.resource("git://commit_rules")
+async def git_commit_rules() -> dict:
+    """Return repository commit rules from COMMIT_RULES.md if present."""
+    return _read_commit_rules(".")
 
 
 _HUNK_HEADER_RE = re.compile(
