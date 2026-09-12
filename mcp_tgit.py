@@ -174,7 +174,7 @@ def _repo_status(repo_path: str, submodule_state: str | None = None) -> dict[str
 
 @mcp.resource("gitdiff://context")
 async def git_diff_context() -> dict:
-    """Return staged/unstaged git diff context for the superproject and all submodules."""
+    """Return staged/unstaged git diff context for the superproject and all submodules. The diffs are formatted using delta. The left column is the old file, and the right column is the staged new file. Keep this in mind to figure out in which direction the changes are aplied."""
     repos = [_repo_status(".")]
     for submodule in _list_submodules():
         repos.append(_repo_status(submodule["path"], submodule["state"]))
