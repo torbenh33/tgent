@@ -698,6 +698,109 @@ def fetch_remote(
 
 
 @mcp.tool()
+def rebase_onto(
+    target_ref: str = "main",
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Rebase the current branch onto a target ref. If conflicts occur, abort the rebase automatically."""
+    clean_target_ref = target_ref.strip() if isinstance(target_ref, str) else ""
+    if not clean_target_ref:
+        return {"status": "error", "message": "Target ref must be provided."}
+
+    branch_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to inspect current branch.",
+            "stderr": branch_proc.stderr,
+            "repo_path": repo_path,
+        }
+    current_branch = branch_proc.stdout.strip()
+    if current_branch == "HEAD":
+        return {
+            "status": "error",
+            "message": "Cannot rebase while HEAD is detached.",
+            "repo_path": repo_path,
+        }
+
+    changes_proc = _git_command(repo_path, ["status", "--porcelain"])
+    if changes_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to inspect working tree state.",
+            "stderr": changes_proc.stderr,
+            "repo_path": repo_path,
+        }
+    if changes_proc.stdout.strip():
+        return {
+            "status": "error",
+            "message": "Working tree is not clean. Commit or stash changes before rebasing.",
+            "repo_path": repo_path,
+        }
+
+    target_check = _git_command(repo_path, ["rev-parse", "--verify", f"{clean_target_ref}^{{commit}}"])
+    if target_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Target ref does not exist.",
+            "repo_path": repo_path,
+            "target_ref": clean_target_ref,
+            "stderr": target_check.stderr,
+        }
+
+    rebase_proc = _git_command(repo_path, ["rebase", clean_target_ref])
+    if rebase_proc.returncode == 0:
+        return {
+            "status": "ok",
+            "message": "Rebase completed.",
+            "repo_path": repo_path,
+            "target_ref": clean_target_ref,
+            "branch": current_branch,
+            "stdout": rebase_proc.stdout,
+            "stderr": rebase_proc.stderr,
+        }
+
+    conflicts_proc = _git_command(repo_path, ["diff", "--name-only", "--diff-filter=U"])
+    has_conflicts = conflicts_proc.returncode == 0 and bool(conflicts_proc.stdout.strip())
+
+    if has_conflicts:
+        abort_proc = _git_command(repo_path, ["rebase", "--abort"])
+        if abort_proc.returncode != 0:
+            return {
+                "status": "error",
+                "message": "Rebase failed with conflicts and abort also failed.",
+                "repo_path": repo_path,
+                "target_ref": clean_target_ref,
+                "branch": current_branch,
+                "rebase_stdout": rebase_proc.stdout,
+                "rebase_stderr": rebase_proc.stderr,
+                "abort_stdout": abort_proc.stdout,
+                "abort_stderr": abort_proc.stderr,
+            }
+        return {
+            "status": "error",
+            "message": "Rebase encountered conflicts and was aborted automatically.",
+            "repo_path": repo_path,
+            "target_ref": clean_target_ref,
+            "branch": current_branch,
+            "rebase_stdout": rebase_proc.stdout,
+            "rebase_stderr": rebase_proc.stderr,
+            "abort_stdout": abort_proc.stdout,
+            "abort_stderr": abort_proc.stderr,
+        }
+
+    return {
+        "status": "error",
+        "message": "Rebase failed.",
+        "repo_path": repo_path,
+        "target_ref": clean_target_ref,
+        "branch": current_branch,
+        "stdout": rebase_proc.stdout,
+        "stderr": rebase_proc.stderr,
+    }
+
+
+@mcp.tool()
 def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = ".") -> dict[str, Any]:
     """Stash local changes using git stash push."""
     if not isinstance(repo_path, str) or not repo_path.strip():
