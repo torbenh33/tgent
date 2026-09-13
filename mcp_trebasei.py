@@ -22,7 +22,8 @@ _SOCKET_SERVER: asyncio.base_events.Server | None = None
 
 def _resolve_repo_path(repo_path: str | None) -> str:
     candidate = repo_path.strip() if isinstance(repo_path, str) else ""
-    return candidate or "."
+    base = candidate or "."
+    return os.path.realpath(os.path.abspath(os.path.expanduser(base)))
 
 
 async def _git_command(repo_path: str, args: list[str]) -> tuple[int, str, str]:
