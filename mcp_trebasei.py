@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastmcp import FastMCP
+from interactive_workflow import RebaseiSessionManager
 
 mcp = FastMCP("tgit-rebasei-async")
 
@@ -297,6 +298,7 @@ class GitWorkflowRunner:
 
 COORDINATOR = RebaseEditorCoordinator()
 WORKFLOW_RUNNER = GitWorkflowRunner()
+SESSIONS = RebaseiSessionManager()
 _SOCKET_SERVER: asyncio.base_events.Server | None = None
 
 
@@ -372,7 +374,7 @@ async def _socket_client_handler(reader: asyncio.StreamReader, writer: asyncio.S
             await _write_json_line(writer, {"status": "error", "message": "Unsupported action."})
             return
 
-        repo_path = str(req.get("repo_path") or ".")
+        repo_path = _resolve_repo_path(str(req.get("repo_path") or "."))
         todo_path = str(req.get("todo_path") or "")
         timeout_s = int(req.get("timeout_s") or DEFAULT_JOB_TIMEOUT_S)
 
@@ -380,11 +382,10 @@ async def _socket_client_handler(reader: asyncio.StreamReader, writer: asyncio.S
             await _write_json_line(writer, {"status": "error", "message": "Missing todo_path."})
             return
 
-        result = await COORDINATOR.enqueue_and_wait(
-            repo_path=repo_path,
-            todo_path=todo_path,
-            timeout_s=timeout_s,
-        )
+        session = await SESSIONS.get_or_create(repo_path, timeout_s)
+        result = await session.on_bridge_request(todo_path=todo_path, timeout_s=timeout_s)
+        if result.get("status") != "ok":
+            await _abort_git_operation(repo_path)
         await _write_json_line(writer, result)
     finally:
         writer.close()
@@ -434,15 +435,8 @@ async def _launch_git_rebasei(
     env["TGIT_REBASEI_SOCKET"] = SOCKET_PATH
     env["TGIT_REBASEI_TIMEOUT_S"] = str(max(1, int(timeout_seconds)))
 
-    start_result = await WORKFLOW_RUNNER.start(
-        workflow="rebasei",
-        repo_path=repo,
-        command=cmd,
-        env=env,
-    )
-    if start_result.get("status") != "ok":
-        return start_result
-
+    session = await SESSIONS.get_or_create(repo, timeout_seconds)
+    start_result = await session.start(command=cmd, env=env)
     start_result["socket_path"] = SOCKET_PATH
     start_result["upstream"] = chosen_upstream
     return start_result
@@ -505,44 +499,30 @@ def _bridge_call(todo_path: str) -> int:
 
 
 @mcp.tool()
-async def get_next_rebasei_job(timeout_seconds: int = 30) -> dict[str, Any]:
-    """Return active rebase editor job; otherwise wait up to timeout_seconds for one."""
-    return await COORDINATOR.get_next_job(timeout_seconds)
-
-
-@mcp.tool()
-async def submit_rebasei_resolution() -> dict[str, Any]:
-    """Finish the active rebase editor job by validating the todo file on disk."""
-    return await COORDINATOR.submit_resolution()
-
-
-@mcp.tool()
-async def invoke_git_rebasei(
+async def step_git_rebasei(
     repo_path: str = ".",
     upstream: str = "HEAD~1",
     timeout_seconds: int = DEFAULT_JOB_TIMEOUT_S,
+    todo_content: str | None = None,
 ) -> dict[str, Any]:
-    """Start git rebase -i in the background and return immediately."""
-    return await _launch_git_rebasei(repo_path, upstream, timeout_seconds)
-
-
-@mcp.tool()
-async def collect_git_rebasei_result(
-    repo_path: str = ".",
-    wait: bool = True,
-    timeout_seconds: int = 0,
-    cleanup: bool = True,
-) -> dict[str, Any]:
-    """Collect git rebase -i process result/output for a repository."""
+    """Single-entry state-machine tool for git rebase -i."""
     repo = _resolve_repo_path(repo_path)
+    session = await SESSIONS.get_or_create(repo, timeout_seconds)
 
-    return await WORKFLOW_RUNNER.collect(
-        workflow="rebasei",
-        repo_path=repo,
-        wait=wait,
-        timeout_seconds=timeout_seconds,
-        cleanup=cleanup,
-    )
+    if not session.running and session.result is None and session.pending_request is None:
+        start_result = await _launch_git_rebasei(repo, upstream, timeout_seconds)
+        if start_result.get("status") != "ok":
+            return start_result
+
+    if todo_content is not None:
+        submit_result = await session.submit_todo_resolution(todo_content=todo_content)
+        if submit_result.get("status") != "ok":
+            return submit_result
+
+    state = await session.get_state()
+    if state.get("state") in {"completed", "error"}:
+        await SESSIONS.remove_if_finished(repo)
+    return state
 
 
 @mcp.resource("rebasei://status")
