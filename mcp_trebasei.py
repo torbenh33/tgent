@@ -10,8 +10,8 @@ from interactive_workflow import InteractiveBridgeServer, InteractiveSession, In
 
 mcp = FastMCP("tgit-rebasei-async")
 
-SOCKET_PATH = os.environ.get("TGIT_REBASEI_SOCKET", "/tmp/tgit-rebasei.sock")
-DEFAULT_JOB_TIMEOUT_S = int(os.environ.get("TGIT_REBASEI_TIMEOUT_S", "900"))
+SOCKET_PATH = os.environ.get("TGIT_INTERACTIVE_SOCKET", "/tmp/tgit-interactive.sock")
+DEFAULT_JOB_TIMEOUT_S = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", "900"))
 
 SESSIONS = InteractiveSessionManager()
 
@@ -92,9 +92,10 @@ def _make_rebase_launcher(
         cmd = ["git", "-C", repo, "rebase", "-i", chosen_upstream]
 
         env = dict(os.environ)
-        env["GIT_SEQUENCE_EDITOR"] = _build_bridge_cmd()
-        env["TGIT_REBASEI_SOCKET"] = SOCKET_PATH
-        env["TGIT_REBASEI_TIMEOUT_S"] = str(max(1, int(timeout_seconds)))
+        env.pop("GIT_SEQUENCE_EDITOR", None)
+        env["GIT_EDITOR"] = _build_bridge_cmd()
+        env["TGIT_INTERACTIVE_SOCKET"] = SOCKET_PATH
+        env["TGIT_INTERACTIVE_TIMEOUT_S"] = str(max(1, int(timeout_seconds)))
 
         session = await SESSIONS.get_or_create(repo, timeout_seconds)
         start_result = await session.start(command=cmd, env=env)
@@ -115,7 +116,14 @@ async def step_git_rebasei(
     has_edit: bool = False,
     wait_for_change_seconds: int = 30,
 ) -> dict[str, Any]:
-    """Single-entry state-machine tool for git rebase -i."""
+    """Drive an interactive `git rebase -i` workflow through one idempotent step call.
+
+    Call this tool repeatedly for the same repo. The first call starts the rebase session;
+    later calls advance it. The tool returns `needs_edit` when Git requests editor input and
+    provides `edit_paths` to open and edit externally. After finishing edits, call again with
+    `has_edit=true` to acknowledge completion and resume Git. Terminal states are `completed`
+    and `error`, which include final process output and return code.
+    """
     repo = _resolve_repo_path(repo_path)
     launcher = _make_rebase_launcher(repo, upstream, timeout_seconds)
     session = await SESSIONS.get_or_create(repo, timeout_seconds, launcher=launcher)
@@ -166,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return InteractiveSession.bridge_call(
             edit_paths=[args.edit_path],
-            socket_path=os.environ.get("TGIT_REBASEI_SOCKET", SOCKET_PATH),
+            socket_path=os.environ.get("TGIT_INTERACTIVE_SOCKET", SOCKET_PATH),
             default_timeout_s=DEFAULT_JOB_TIMEOUT_S,
         )
 

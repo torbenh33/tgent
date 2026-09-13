@@ -67,7 +67,7 @@ class InteractiveSession:
 
     @staticmethod
     def bridge_call(edit_paths: list[str], socket_path: str, default_timeout_s: int) -> int:
-        timeout_s = int(os.environ.get("TGIT_REBASEI_TIMEOUT_S", str(default_timeout_s)))
+        timeout_s = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", str(default_timeout_s)))
 
         req = {
             "action": "enqueue_job",
