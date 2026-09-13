@@ -415,7 +415,7 @@ async def stop_socket_server(socket_path: str = SOCKET_PATH) -> None:
 
 def _build_bridge_cmd() -> str:
     script = os.path.abspath(__file__)
-    return f"{shlex.quote(sys.executable)} {shlex.quote(script)} --bridge \"$1\""
+    return f"{shlex.quote(sys.executable)} {shlex.quote(script)} --bridge"
 
 
 async def _launch_git_rebasei(
