@@ -94,15 +94,15 @@ async def _socket_client_handler(reader: asyncio.StreamReader, writer: asyncio.S
             return
 
         repo_path = _resolve_repo_path(str(req.get("repo_path") or "."))
-        todo_path = str(req.get("todo_path") or "")
+        edit_path = str(req.get("todo_path") or "")
         timeout_s = int(req.get("timeout_s") or DEFAULT_JOB_TIMEOUT_S)
 
-        if not todo_path:
-            await _write_json_line(writer, {"status": "error", "message": "Missing todo_path."})
+        if not edit_path:
+            await _write_json_line(writer, {"status": "error", "message": "Missing edit_path."})
             return
 
         session = await SESSIONS.get_or_create(repo_path, timeout_s)
-        result = await session.on_bridge_request(todo_path=todo_path, timeout_s=timeout_s)
+        result = await session.on_edit_request(edit_path=edit_path, timeout_s=timeout_s)
         if result.get("status") != "ok":
             await _abort_git_operation(repo_path)
         await _write_json_line(writer, result)
@@ -222,7 +222,8 @@ async def step_git_rebasei(
     repo_path: str = ".",
     upstream: str = "HEAD~1",
     timeout_seconds: int = DEFAULT_JOB_TIMEOUT_S,
-    todo_content: str | None = None,
+    has_edit: bool = False,
+    wait_for_change_seconds: int = 30,
 ) -> dict[str, Any]:
     """Single-entry state-machine tool for git rebase -i."""
     repo = _resolve_repo_path(repo_path)
@@ -233,12 +234,12 @@ async def step_git_rebasei(
         if start_result.get("status") != "ok":
             return start_result
 
-    if todo_content is not None:
-        submit_result = await session.submit_todo_resolution(todo_content=todo_content)
+    if has_edit:
+        submit_result = await session.submit_edit_resolution()
         if submit_result.get("status") != "ok":
             return submit_result
 
-    state = await session.get_state()
+    state = await session.wait_for_action(timeout_s=max(1, int(wait_for_change_seconds)))
     if state.get("state") in {"completed", "error"}:
         await SESSIONS.remove_if_finished(repo)
     return state

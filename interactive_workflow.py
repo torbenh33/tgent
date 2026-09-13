@@ -16,8 +16,8 @@ class SessionPhase(str, Enum):
 
 
 @dataclass
-class BridgeRequest:
-    todo_path: str
+class EditRequest:
+    edit_path: str
     timeout_s: int
     created_at: float = field(default_factory=time.time)
     future: asyncio.Future[dict[str, Any]] | None = None
@@ -30,11 +30,13 @@ class RebaseiSession:
         self.phase: SessionPhase = SessionPhase.IDLE
         self.process: asyncio.subprocess.Process | None = None
         self.output_task: asyncio.Task[tuple[bytes, bytes]] | None = None
-        self.pending_request: BridgeRequest | None = None
+        self.pending_request: EditRequest | None = None
         self.result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.created_at = time.time()
         self._lock = asyncio.Lock()
+        self.needs_input_event = asyncio.Event()
+        self.finished_event = asyncio.Event()
 
     @property
     def running(self) -> bool:
@@ -51,6 +53,11 @@ class RebaseiSession:
                 }
 
             self.phase = SessionPhase.STARTING
+            self.result = None
+            self.last_error = None
+            self.pending_request = None
+            self.needs_input_event.clear()
+            self.finished_event.clear()
             self.process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
@@ -87,8 +94,10 @@ class RebaseiSession:
             "stderr": stderr.decode("utf-8", errors="replace"),
         }
         self.phase = SessionPhase.DONE if rc == 0 else SessionPhase.ERROR
+        self.needs_input_event.clear()
+        self.finished_event.set()
 
-    async def on_bridge_request(self, todo_path: str, timeout_s: int) -> dict[str, Any]:
+    async def on_edit_request(self, edit_path: str, timeout_s: int) -> dict[str, Any]:
         async with self._lock:
             if self.pending_request is not None and self.pending_request.future is not None:
                 if not self.pending_request.future.done():
@@ -99,12 +108,13 @@ class RebaseiSession:
                     }
 
             fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-            self.pending_request = BridgeRequest(
-                todo_path=todo_path,
+            self.pending_request = EditRequest(
+                edit_path=edit_path,
                 timeout_s=max(1, int(timeout_s)),
                 future=fut,
             )
             self.phase = SessionPhase.WAITING_INPUT
+            self.needs_input_event.set()
 
         try:
             return await asyncio.wait_for(fut, timeout=max(1, int(timeout_s)))
@@ -112,53 +122,32 @@ class RebaseiSession:
             async with self._lock:
                 if self.pending_request is not None and self.pending_request.future is fut:
                     self.pending_request = None
-                    self.last_error = "Timed out waiting for rebase todo edits."
+                    self.last_error = "Timed out waiting for required edit."
                     self.phase = SessionPhase.ERROR
+                    self.needs_input_event.clear()
             return {
                 "status": "error",
-                "message": "Timed out waiting for rebase todo edits.",
+                "message": "Timed out waiting for required edit.",
                 "repo_path": self.repo_path,
             }
 
-    async def submit_todo_resolution(self, todo_content: str | None = None) -> dict[str, Any]:
+    async def submit_edit_resolution(self) -> dict[str, Any]:
         async with self._lock:
             req = self.pending_request
             if req is None or req.future is None or req.future.done():
-                return {"status": "error", "message": "No active todo request."}
-
-            if todo_content is not None:
-                try:
-                    with open(req.todo_path, "w", encoding="utf-8") as handle:
-                        handle.write(todo_content)
-                except OSError as err:
-                    return {
-                        "status": "error",
-                        "message": "Failed to write todo file.",
-                        "error": str(err),
-                        "todo_path": req.todo_path,
-                    }
-            else:
-                try:
-                    with open(req.todo_path, "r", encoding="utf-8") as handle:
-                        handle.read()
-                except OSError as err:
-                    return {
-                        "status": "error",
-                        "message": "Failed to read todo file.",
-                        "error": str(err),
-                        "todo_path": req.todo_path,
-                    }
+                return {"status": "error", "message": "No active edit request."}
 
             req.future.set_result(
                 {
                     "status": "ok",
-                    "message": "Rebase todo edits acknowledged.",
+                    "message": "Required edit acknowledged.",
                     "repo_path": self.repo_path,
-                    "todo_path": req.todo_path,
+                    "edit_path": req.edit_path,
                 }
             )
             self.pending_request = None
             self.phase = SessionPhase.RUNNING
+            self.needs_input_event.clear()
 
             return {"status": "ok", "message": "Resolution submitted."}
 
@@ -166,19 +155,11 @@ class RebaseiSession:
         async with self._lock:
             req = self.pending_request
             if req is not None and req.future is not None and not req.future.done():
-                todo_text = ""
-                try:
-                    with open(req.todo_path, "r", encoding="utf-8") as handle:
-                        todo_text = handle.read()
-                except OSError:
-                    todo_text = ""
-
                 return {
                     "status": "ok",
-                    "state": "needs_todo",
+                    "state": "needs_edit",
                     "repo_path": self.repo_path,
-                    "todo_path": req.todo_path,
-                    "todo_content": todo_text,
+                    "edit_path": req.edit_path,
                 }
 
             if self.result is not None:
@@ -205,6 +186,34 @@ class RebaseiSession:
                 "state": self.phase.value,
                 "repo_path": self.repo_path,
             }
+
+    async def wait_for_action(self, timeout_s: int) -> dict[str, Any]:
+        state = await self.get_state()
+        if state.get("state") in {"needs_edit", "completed", "error"}:
+            return state
+
+        waiters = {
+            asyncio.create_task(self.needs_input_event.wait()),
+            asyncio.create_task(self.finished_event.wait()),
+        }
+
+        try:
+            done, pending = await asyncio.wait(
+                waiters,
+                timeout=max(1, int(timeout_s)),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            _ = done
+        finally:
+            for task in waiters:
+                if not task.done():
+                    task.cancel()
+
+        return await self.get_state()
 
 
 class RebaseiSessionManager:
