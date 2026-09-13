@@ -126,6 +126,7 @@ class InteractiveSession:
             self.finished_event.clear()
             self.process = await asyncio.create_subprocess_exec(
                 *command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -274,7 +275,7 @@ class InteractiveSession:
             if start_result.get("status") != "ok":
                 return start_result
 
-        if has_edit:
+        if has_edit and self.pending_request is not None:
             submit_result = await self.submit_edit_resolution()
             if submit_result.get("status") != "ok":
                 return submit_result
