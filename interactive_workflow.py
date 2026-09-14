@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import socket
+import shutil
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ class EditRequest:
     timeout_s: int
     created_at: float = field(default_factory=time.time)
     future: asyncio.Future[dict[str, Any]] | None = None
+    sync_back: dict[str, str] = field(default_factory=dict)
 
 
 class InteractiveSession:
@@ -48,6 +50,7 @@ class InteractiveSession:
         self.needs_input_event = asyncio.Event()
         self.finished_event = asyncio.Event()
         self.launcher = launcher
+        self._abort_requested = False
 
     @property
     def running(self) -> bool:
@@ -66,12 +69,13 @@ class InteractiveSession:
         return proc.stdout.strip() or "."
 
     @staticmethod
-    def bridge_call(edit_paths: list[str], socket_path: str, default_timeout_s: int) -> int:
+    def bridge_call(edit_paths: list[str], socket_path: str, default_timeout_s: int, repo_path: str = "") -> int:
         timeout_s = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", str(default_timeout_s)))
 
+        resolved_repo_path = repo_path.strip() if isinstance(repo_path, str) else ""
         req = {
             "action": "enqueue_job",
-            "repo_path": InteractiveSession._bridge_repo_path(),
+            "repo_path": resolved_repo_path or InteractiveSession._bridge_repo_path(),
             "edit_paths": [p for p in edit_paths if isinstance(p, str) and p.strip()],
             "timeout_s": max(1, timeout_s),
         }
@@ -122,6 +126,7 @@ class InteractiveSession:
             self.result = None
             self.last_error = None
             self.pending_request = None
+            self._abort_requested = False
             self.needs_input_event.clear()
             self.finished_event.clear()
             self.process = await asyncio.create_subprocess_exec(
@@ -151,16 +156,29 @@ class InteractiveSession:
 
         stdout, stderr = await task
         rc = proc.returncode
-        self.result = {
-            "status": "ok" if rc == 0 else "error",
-            "state": "completed" if rc == 0 else "error",
-            "running": False,
-            "returncode": rc,
-            "repo_path": self.repo_path,
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
-        }
-        self.phase = SessionPhase.DONE if rc == 0 else SessionPhase.ERROR
+        if self._abort_requested:
+            self.result = {
+                "status": "ok",
+                "state": "aborted",
+                "running": False,
+                "returncode": rc,
+                "repo_path": self.repo_path,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+                "message": "Session aborted.",
+            }
+            self.phase = SessionPhase.DONE
+        else:
+            self.result = {
+                "status": "ok" if rc == 0 else "error",
+                "state": "completed" if rc == 0 else "error",
+                "running": False,
+                "returncode": rc,
+                "repo_path": self.repo_path,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+            self.phase = SessionPhase.DONE if rc == 0 else SessionPhase.ERROR
         self.needs_input_event.clear()
         self.finished_event.set()
 
@@ -183,10 +201,42 @@ class InteractiveSession:
                     "repo_path": self.repo_path,
                 }
 
+            repo_root = os.path.realpath(os.path.abspath(self.repo_path))
+            rewritten_paths: list[str] = []
+            for p in normalized_paths:
+                source = os.path.realpath(os.path.abspath(os.path.expanduser(p)))
+
+                try:
+                    common = os.path.commonpath([repo_root, source])
+                except ValueError:
+                    common = ""
+
+                if common == repo_root:
+                    rewritten_paths.append(source)
+                    continue
+
+                target = os.path.join(repo_root, os.path.basename(source))
+                if os.path.exists(target):
+                    rewritten_paths.append(source)
+                    continue
+
+                try:
+                    shutil.move(source, target)
+                    rewritten_paths.append(target)
+                except OSError:
+                    rewritten_paths.append(source)
+
+            sync_back: dict[str, str] = {}
+            for source, rewritten in zip(normalized_paths, rewritten_paths):
+                original = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
+                if rewritten != original:
+                    sync_back[rewritten] = original
+
             self.pending_request = EditRequest(
-                edit_paths=normalized_paths,
+                edit_paths=rewritten_paths,
                 timeout_s=max(1, int(timeout_s)),
                 future=fut,
+                sync_back=sync_back,
             )
             self.phase = SessionPhase.WAITING_INPUT
             self.needs_input_event.set()
@@ -211,6 +261,18 @@ class InteractiveSession:
             req = self.pending_request
             if req is None or req.future is None or req.future.done():
                 return {"status": "error", "message": "No active edit request."}
+
+            for rewritten, original in req.sync_back.items():
+                try:
+                    shutil.move(rewritten, original)
+                except OSError as err:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to sync edited file back to original path: {err}",
+                        "repo_path": self.repo_path,
+                        "edit_path": rewritten,
+                        "original_path": original,
+                    }
 
             req.future.set_result(
                 {
@@ -261,6 +323,46 @@ class InteractiveSession:
                 "state": self.phase.value,
                 "repo_path": self.repo_path,
             }
+
+    async def abort(self) -> dict[str, Any]:
+        async with self._lock:
+            self._abort_requested = True
+            proc = self.process
+            req = self.pending_request
+            self.pending_request = None
+            self.needs_input_event.clear()
+
+            if req is not None and req.future is not None and not req.future.done():
+                req.future.set_result(
+                    {
+                        "status": "error",
+                        "state": "aborted",
+                        "repo_path": self.repo_path,
+                        "message": "Session aborted.",
+                    }
+                )
+
+        if proc is not None and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+
+        await self.finished_event.wait()
+
+        state = await self.get_state()
+        if state.get("state") == "aborted":
+            return state
+
+        return {
+            "status": "ok",
+            "state": "aborted",
+            "repo_path": self.repo_path,
+            "message": "Session aborted.",
+            "result": state,
+        }
 
     async def step(self, has_edit: bool, wait_timeout_s: int) -> dict[str, Any]:
         if not self.running and self.result is None and self.pending_request is None:
@@ -343,6 +445,16 @@ class InteractiveSessionManager:
             if not session.running and session.pending_request is None:
                 self._sessions.pop(repo_path, None)
 
+    async def pop(self, repo_path: str) -> InteractiveSession | None:
+        async with self._lock:
+            return self._sessions.pop(repo_path, None)
+
+
+def _normalize_repo_path(repo_path: str | None) -> str:
+    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
+    base = candidate or "."
+    return os.path.realpath(os.path.abspath(os.path.expanduser(base)))
+
 
 class InteractiveBridgeServer:
     def __init__(
@@ -384,7 +496,7 @@ class InteractiveBridgeServer:
                 await self._write_json_line(writer, {"status": "error", "message": "Unsupported action."})
                 return
 
-            repo_path = str(req.get("repo_path") or ".")
+            repo_path = _normalize_repo_path(str(req.get("repo_path") or "."))
             raw_edit_paths = req.get("edit_paths")
             timeout_s = int(req.get("timeout_s") or 900)
 

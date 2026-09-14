@@ -74,9 +74,22 @@ BRIDGE_SERVER = InteractiveBridgeServer(
 )
 
 
-def _build_bridge_cmd() -> str:
+def _build_bridge_cmd(repo_path: str) -> str:
     script = os.path.abspath(__file__)
-    return f"{shlex.quote(sys.executable)} {shlex.quote(script)} --bridge"
+    return (
+        f"{shlex.quote(sys.executable)} {shlex.quote(script)} --bridge "
+        f"--repo-path {shlex.quote(repo_path)}"
+    )
+
+
+def _is_recoverable_rebase_resolution_error(stderr: str) -> bool:
+    text = (stderr or "").lower()
+    return (
+        "resolve all conflicts manually" in text
+        or "after resolving the conflicts" in text
+        or "git rebase --continue" in text
+        or "could not apply" in text
+    )
 
 
 def _make_rebase_launcher(
@@ -89,11 +102,12 @@ def _make_rebase_launcher(
 
     async def _launcher(_session: Any) -> dict[str, Any]:
         await BRIDGE_SERVER.start()
-        cmd = ["git", "-C", repo, "rebase", "-i", chosen_upstream]
+        op = await _detect_operation(repo)
+        cmd = ["git", "-C", repo, "rebase", "--continue"] if op == "rebase" else ["git", "-C", repo, "rebase", "-i", chosen_upstream]
 
         env = dict(os.environ)
         env.pop("GIT_SEQUENCE_EDITOR", None)
-        env["GIT_EDITOR"] = _build_bridge_cmd()
+        env["GIT_EDITOR"] = _build_bridge_cmd(repo)
         env["TGIT_INTERACTIVE_SOCKET"] = SOCKET_PATH
         env["TGIT_INTERACTIVE_TIMEOUT_S"] = str(max(1, int(timeout_seconds)))
 
@@ -101,6 +115,7 @@ def _make_rebase_launcher(
         start_result = await session.start(command=cmd, env=env)
         start_result["socket_path"] = SOCKET_PATH
         start_result["upstream"] = chosen_upstream
+        start_result["mode"] = "continue" if op == "rebase" else "start"
         return start_result
 
     return _launcher
@@ -115,16 +130,37 @@ async def step_git_rebasei(
     timeout_seconds: int = DEFAULT_JOB_TIMEOUT_S,
     has_edit: bool = False,
     wait_for_change_seconds: int = 30,
+    abort: bool = False,
 ) -> dict[str, Any]:
     """Drive an interactive `git rebase -i` workflow through one idempotent step call.
 
     Call this tool repeatedly for the same repo. The first call starts the rebase session;
     later calls advance it. The tool returns `needs_edit` when Git requests editor input and
     provides `edit_paths` to open and edit externally. After finishing edits, call again with
-    `has_edit=true` to acknowledge completion and resume Git. Terminal states are `completed`
-    and `error`, which include final process output and return code.
+    `has_edit=true` to acknowledge completion and resume Git. Set `abort=true` to cancel an
+    active merge/rebase/cherry-pick operation for the repo and clear finished session state.
+    Terminal states are `completed` and `error`, which include final process output and return code.
     """
     repo = _resolve_repo_path(repo_path)
+
+    if abort:
+        session = await SESSIONS.pop(repo)
+        session_state: dict[str, Any] | None = None
+        if session is not None:
+            session_state = await session.abort()
+
+        await _abort_git_operation(repo)
+
+        if session_state is not None:
+            return session_state
+
+        return {
+            "status": "ok",
+            "state": "aborted",
+            "repo_path": repo,
+            "message": "Aborted active git operation if present.",
+        }
+
     launcher = _make_rebase_launcher(repo, upstream, timeout_seconds)
     session = await SESSIONS.get_or_create(repo, timeout_seconds, launcher=launcher)
 
@@ -132,6 +168,17 @@ async def step_git_rebasei(
         has_edit=has_edit,
         wait_timeout_s=max(1, int(wait_for_change_seconds)),
     )
+
+    if state.get("state") == "error" and _is_recoverable_rebase_resolution_error(str(state.get("stderr") or "")):
+        await SESSIONS.remove_if_finished(repo)
+        return {
+            "status": "ok",
+            "state": "needs_resolution",
+            "repo_path": repo,
+            "message": "Rebase paused due to conflicts. Resolve conflicts, stage files, then call step_git_rebasei again.",
+            "stderr": state.get("stderr", ""),
+        }
+
     if state.get("state") in {"completed", "error"}:
         await SESSIONS.remove_if_finished(repo)
     return state
@@ -162,6 +209,7 @@ async def _run_mcp_server() -> None:
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="tgit async MCP server + rebase -i bridge")
     parser.add_argument("--bridge", action="store_true", help="Run as git sequence editor bridge")
+    parser.add_argument("--repo-path", default="", help="Repository path for bridge session lookup")
     parser.add_argument("edit_path", nargs="?", default="")
     return parser.parse_args(argv)
 
@@ -176,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             edit_paths=[args.edit_path],
             socket_path=os.environ.get("TGIT_INTERACTIVE_SOCKET", SOCKET_PATH),
             default_timeout_s=DEFAULT_JOB_TIMEOUT_S,
+            repo_path=args.repo_path,
         )
 
     asyncio.run(_run_mcp_server())
