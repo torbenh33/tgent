@@ -458,7 +458,7 @@ def stage_lines(
     new_line_numbers: list[int],
     repo_path: str,
 ) -> dict[str, Any]:
-    """Stage selected old/new changed line numbers from one file using git apply --cached."""
+    """Stage selected changed lines from one file using git apply --cached. Requires path, old_line_numbers/new_line_numbers, and repo_path; old_line_numbers refer to removed lines and new_line_numbers to added lines in the unstaged diff. For submodules, set repo_path to the submodule root and use a path relative to that submodule."""
     if not path:
         return {"status": "error", "message": "Path must be provided."}
     if not isinstance(repo_path, str) or not repo_path.strip():
@@ -525,7 +525,7 @@ def unstage_lines(
     new_line_numbers: list[int],
     repo_path: str,
 ) -> dict[str, Any]:
-    """Unstage selected old/new changed line numbers from one file using reverse git apply --cached."""
+    """Unstage selected staged lines from one file using reverse git apply --cached. Requires path, old_line_numbers/new_line_numbers, and repo_path; old_line_numbers refer to removed lines and new_line_numbers to added lines in the staged diff. For submodules, set repo_path to the submodule root and use a path relative to that submodule."""
     if not path:
         return {"status": "error", "message": "Path must be provided."}
     if not isinstance(repo_path, str) or not repo_path.strip():
@@ -586,7 +586,7 @@ def unstage_lines(
 
 @mcp.tool()
 def stage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
-    """Stage entire files using git add for a provided list of file paths."""
+    """Stage entire files using git add for a provided list of file paths. Provide both required parameters: paths and repo_path. For submodules, run this tool with repo_path set to the submodule root and paths relative to that submodule."""
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
 
@@ -615,7 +615,7 @@ def stage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
 
 @mcp.tool()
 def unstage_files(paths: list[str], repo_path: str) -> dict[str, Any]:
-    """Unstage entire files using git restore --staged for a provided list of file paths."""
+    """Unstage entire files using git restore --staged for a provided list of file paths. Provide both required parameters: paths and repo_path. For submodules, run this tool with repo_path set to the submodule root and paths relative to that submodule."""
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
 
@@ -650,7 +650,7 @@ def fetch_remote(
     tags: bool = False,
     recursive: bool = True,
 ) -> dict[str, Any]:
-    """Fetch updates from a git remote. Defaults to origin and fetches submodules recursively by default."""
+    """Fetch updates from a git remote. Defaults to remote='origin' and recursive submodule fetching enabled; set prune=True to remove stale remote-tracking refs and tags=True to fetch tags. Use repo_path to target either the superproject or a submodule root."""
     clean_remote = remote.strip() if isinstance(remote, str) else ""
     if not clean_remote:
         return {"status": "error", "message": "Remote name must be provided."}
@@ -698,11 +698,86 @@ def fetch_remote(
 
 
 @mcp.tool()
+def push_to_remote(
+    remote: str = "origin",
+    branch: str | None = None,
+    repo_path: str = ".",
+    set_upstream: bool = False,
+    force_with_lease: bool = False,
+) -> dict[str, Any]:
+    """Push the current or a specified branch to a remote. If branch is omitted, the current branch is used; pushing is refused on detached HEAD unless branch is provided. Optional set_upstream adds -u and force_with_lease adds --force-with-lease."""
+    clean_remote = remote.strip() if isinstance(remote, str) else ""
+    if not clean_remote:
+        return {"status": "error", "message": "Remote name must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
+    remote_check = _git_command(repo_path, ["remote", "get-url", clean_remote])
+    if remote_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Remote does not exist.",
+            "repo_path": repo_path,
+            "remote": clean_remote,
+            "stderr": remote_check.stderr,
+        }
+
+    target_branch = branch.strip() if isinstance(branch, str) and branch.strip() else ""
+    if not target_branch:
+        branch_proc = _git_command(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if branch_proc.returncode != 0:
+            return {
+                "status": "error",
+                "message": "Failed to inspect current branch.",
+                "repo_path": repo_path,
+                "stderr": branch_proc.stderr,
+            }
+        target_branch = branch_proc.stdout.strip()
+        if target_branch == "HEAD":
+            return {
+                "status": "error",
+                "message": "Cannot push while HEAD is detached. Specify a branch.",
+                "repo_path": repo_path,
+            }
+
+    cmd = ["push"]
+    if set_upstream:
+        cmd.append("-u")
+    if force_with_lease:
+        cmd.append("--force-with-lease")
+    cmd.extend([clean_remote, target_branch])
+
+    push_proc = _git_command(repo_path, cmd)
+    if push_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "git push failed.",
+            "repo_path": repo_path,
+            "remote": clean_remote,
+            "branch": target_branch,
+            "command": cmd,
+            "stdout": push_proc.stdout,
+            "stderr": push_proc.stderr,
+        }
+
+    return {
+        "status": "ok",
+        "message": "Push completed.",
+        "repo_path": repo_path,
+        "remote": clean_remote,
+        "branch": target_branch,
+        "command": cmd,
+        "stdout": push_proc.stdout,
+        "stderr": push_proc.stderr,
+    }
+
+
+@mcp.tool()
 def rebase_onto(
     target_ref: str = "main",
     repo_path: str = ".",
 ) -> dict[str, Any]:
-    """Rebase the current branch onto a target ref. If conflicts occur, abort the rebase automatically."""
+    """Rebase the current branch onto a target ref. Requires a clean working tree and a valid target ref; detached HEAD is rejected. If conflicts are detected, the tool aborts the rebase automatically and returns conflict details."""
     clean_target_ref = target_ref.strip() if isinstance(target_ref, str) else ""
     if not clean_target_ref:
         return {"status": "error", "message": "Target ref must be provided."}
@@ -802,7 +877,7 @@ def rebase_onto(
 
 @mcp.tool()
 def stash_changes(message: str = "", include_untracked: bool = False, repo_path: str = ".") -> dict[str, Any]:
-    """Stash local changes using git stash push."""
+    """Stash local changes using git stash push. If there are no local changes, this returns success with a no-op message. Set include_untracked=True to include untracked files and provide message to label the stash entry."""
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
 
@@ -844,7 +919,7 @@ def stash_changes(message: str = "", include_untracked: bool = False, repo_path:
 
 @mcp.tool()
 def unstash_changes(stash_ref: str = "stash@{0}", repo_path: str = ".", pop: bool = True) -> dict[str, Any]:
-    """Apply stashed changes from a stash ref. Defaults to popping stash@{0}."""
+    """Apply stashed changes from a stash ref. Defaults to stash_ref='stash@{0}' and pop=True, which drops the stash on success; set pop=False to keep it. Returns an error if no stash entries exist or if git stash apply/pop fails."""
     clean_stash_ref = stash_ref.strip() if isinstance(stash_ref, str) and stash_ref.strip() else "stash@{0}"
 
     stash_check = _git_command(repo_path, ["stash", "list"])
@@ -888,7 +963,7 @@ def unstash_changes(stash_ref: str = "stash@{0}", repo_path: str = ".", pop: boo
 
 @mcp.tool()
 def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
-    """Commit currently staged changes using git commit."""
+    """Commit currently staged changes using git commit. Requires message and repo_path, and returns an error when nothing is staged. Commits are created with signoff enabled (-s)."""
     if not message or not message.strip():
         return {"status": "error", "message": "Commit message must be provided."}
     if not isinstance(repo_path, str) or not repo_path.strip():
@@ -925,12 +1000,85 @@ def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
+def rebase_log(
+    base_ref: str = "main",
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Return git log -p from base_ref (exclusive) to HEAD (inclusive), ordered oldest->newest for interactive rebase planning. Defaults to base_ref='main' and validates both base_ref and HEAD before reading patches. Includes commit_count and the full patch log in the response."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
+    clean_base_ref = base_ref.strip() if isinstance(base_ref, str) else ""
+    if not clean_base_ref:
+        return {"status": "error", "message": "base_ref must be provided."}
+
+    base_check = _git_command(repo_path, ["rev-parse", "--verify", f"{clean_base_ref}^{{commit}}"])
+    if base_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Base ref does not exist.",
+            "repo_path": repo_path,
+            "base_ref": clean_base_ref,
+            "stderr": base_check.stderr,
+        }
+
+    head_check = _git_command(repo_path, ["rev-parse", "--verify", "HEAD^{commit}"])
+    if head_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to resolve HEAD commit.",
+            "repo_path": repo_path,
+            "stderr": head_check.stderr,
+        }
+
+    rev_list_proc = _git_command(repo_path, ["rev-list", "--count", f"{clean_base_ref}..HEAD"])
+    if rev_list_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to compute commit range.",
+            "repo_path": repo_path,
+            "base_ref": clean_base_ref,
+            "stderr": rev_list_proc.stderr,
+        }
+
+    try:
+        commit_count = int(rev_list_proc.stdout.strip() or "0")
+    except ValueError:
+        commit_count = 0
+
+    range_spec = f"{clean_base_ref}..HEAD"
+    log_proc = _git_command(
+        repo_path,
+        ["log", "--reverse", "-p", "--no-color", "--no-ext-diff", "--submodule=short", range_spec],
+    )
+    if log_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to read git log patch range.",
+            "repo_path": repo_path,
+            "base_ref": clean_base_ref,
+            "range": range_spec,
+            "stderr": log_proc.stderr,
+            "stdout": log_proc.stdout,
+        }
+
+    return {
+        "status": "ok",
+        "repo_path": repo_path,
+        "base_ref": clean_base_ref,
+        "range": range_spec,
+        "commit_count": commit_count,
+        "log": log_proc.stdout,
+    }
+
+
+@mcp.tool()
 def create_feature_branch(
     branch_name: str,
     repo_path: str,
     from_ref: str = "HEAD",
 ) -> dict[str, Any]:
-    """Create and switch to a new feature branch in the target repository."""
+    """Create and switch to a new feature branch in the target repository. Requires branch_name and repo_path; from_ref defaults to HEAD. Rejects existing branch names and reserved default names (main/master), and returns the previous branch on success."""
     clean_branch_name = branch_name.strip() if isinstance(branch_name, str) else ""
     if not clean_branch_name:
         return {"status": "error", "message": "Branch name must be provided."}
