@@ -329,8 +329,16 @@ class InteractiveSession:
             self._abort_requested = True
             proc = self.process
             req = self.pending_request
+            has_output_task = self.output_task is not None
             self.pending_request = None
             self.needs_input_event.clear()
+
+            if req is not None:
+                for rewritten, original in req.sync_back.items():
+                    try:
+                        shutil.move(rewritten, original)
+                    except OSError:
+                        pass
 
             if req is not None and req.future is not None and not req.future.done():
                 req.future.set_result(
@@ -342,6 +350,21 @@ class InteractiveSession:
                     }
                 )
 
+            if not has_output_task:
+                self.result = {
+                    "status": "ok",
+                    "state": "aborted",
+                    "running": False,
+                    "returncode": None,
+                    "repo_path": self.repo_path,
+                    "stdout": "",
+                    "stderr": "",
+                    "message": "Session aborted.",
+                }
+                self.phase = SessionPhase.DONE
+                self.finished_event.set()
+                return self.result
+
         if proc is not None and proc.returncode is None:
             proc.terminate()
             try:
@@ -350,7 +373,15 @@ class InteractiveSession:
                 proc.kill()
                 await proc.wait()
 
-        await self.finished_event.wait()
+        try:
+            await asyncio.wait_for(self.finished_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            return {
+                "status": "ok",
+                "state": "aborted",
+                "repo_path": self.repo_path,
+                "message": "Session abort requested; process shutdown timed out.",
+            }
 
         state = await self.get_state()
         if state.get("state") == "aborted":
@@ -507,9 +538,9 @@ class InteractiveBridgeServer:
 
             session = await self.sessions.get_or_create(repo_path, timeout_s)
             result = await session.on_edit_request(edit_paths=edit_paths, timeout_s=timeout_s)
-            if result.get("status") != "ok" and self.on_request_error is not None:
-                await self.on_request_error(repo_path)
             await self._write_json_line(writer, result)
+            if result.get("status") != "ok" and self.on_request_error is not None:
+                asyncio.create_task(self.on_request_error(repo_path))
         finally:
             writer.close()
             await writer.wait_closed()
