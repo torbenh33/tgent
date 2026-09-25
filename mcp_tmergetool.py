@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from fastmcp import FastMCP
-from interactive_workflow import InteractiveBridgeServer, InteractiveSession, InteractiveSessionManager
+from interactive_workflow import InteractiveBridgeServer, InteractiveSession, InteractiveSessionManager, resolve_repo_path
 
 mcp = FastMCP("tgit-mergetool-async")
 
@@ -16,17 +16,11 @@ DEFAULT_JOB_TIMEOUT_S = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", "900"))
 SESSIONS = InteractiveSessionManager()
 
 
-def _resolve_repo_path(repo_path: str | None) -> str:
-    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
-    base = candidate or "."
-    return os.path.realpath(os.path.abspath(os.path.expanduser(base)))
-
-
 async def _git_command(repo_path: str, args: list[str]) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         "git",
         "-C",
-        _resolve_repo_path(repo_path),
+        resolve_repo_path(repo_path),
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -111,7 +105,7 @@ def _make_mergetool_launcher(
     repo_path: str,
     timeout_seconds: int,
 ):
-    repo = _resolve_repo_path(repo_path)
+    repo = resolve_repo_path(repo_path, discover_git_root=True)
 
     async def _launcher(_session: Any) -> dict[str, Any]:
         await BRIDGE_SERVER.start()
@@ -171,7 +165,7 @@ async def step_git_mergetool(
     finishing edits, call again with `has_edit=true` to acknowledge completion.
     Terminal states are `completed` and `error`.
     """
-    repo = _resolve_repo_path(repo_path)
+    repo = resolve_repo_path(repo_path, discover_git_root=True)
     launcher = _make_mergetool_launcher(repo, timeout_seconds)
     session = await SESSIONS.get_or_create(repo, timeout_seconds, launcher=launcher)
 
@@ -188,7 +182,7 @@ async def step_git_mergetool(
 @mcp.tool()
 async def inspect_unmerged_conflicts(repo_path: str = ".") -> dict[str, Any]:
     """Classify unmerged paths, including delete/modify conflict indicators."""
-    repo = _resolve_repo_path(repo_path)
+    repo = resolve_repo_path(repo_path, discover_git_root=True)
     try:
         conflicts = await _classify_unmerged_paths(repo)
     except RuntimeError as err:
