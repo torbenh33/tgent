@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from fastmcp import FastMCP
-from interactive_workflow import InteractiveBridgeServer, InteractiveSession, InteractiveSessionManager
+from interactive_workflow import InteractiveBridgeServer, InteractiveSession, InteractiveSessionManager, resolve_repo_path
 
 mcp = FastMCP("tgit-rebasei-async")
 
@@ -16,17 +16,11 @@ DEFAULT_JOB_TIMEOUT_S = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", "900"))
 SESSIONS = InteractiveSessionManager()
 
 
-def _resolve_repo_path(repo_path: str | None) -> str:
-    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
-    base = candidate or "."
-    return os.path.realpath(os.path.abspath(os.path.expanduser(base)))
-
-
 async def _git_command(repo_path: str, args: list[str]) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         "git",
         "-C",
-        _resolve_repo_path(repo_path),
+        resolve_repo_path(repo_path),
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -42,7 +36,7 @@ async def _detect_operation(repo_path: str) -> str | None:
 
     git_dir = out.strip()
     if not os.path.isabs(git_dir):
-        git_dir = os.path.abspath(os.path.join(_resolve_repo_path(repo_path), git_dir))
+        git_dir = os.path.abspath(os.path.join(resolve_repo_path(repo_path), git_dir))
 
     if os.path.exists(os.path.join(git_dir, "MERGE_HEAD")):
         return "merge"
@@ -97,7 +91,7 @@ def _make_rebase_launcher(
     upstream: str,
     timeout_seconds: int,
 ):
-    repo = _resolve_repo_path(repo_path)
+    repo = resolve_repo_path(repo_path, discover_git_root=True)
     chosen_upstream = upstream.strip() or "HEAD~1"
 
     async def _launcher(_session: Any) -> dict[str, Any]:
@@ -141,7 +135,7 @@ async def step_git_rebasei(
     active merge/rebase/cherry-pick operation for the repo and clear finished session state.
     Terminal states are `completed` and `error`, which include final process output and return code.
     """
-    repo = _resolve_repo_path(repo_path)
+    repo = resolve_repo_path(repo_path, discover_git_root=True)
 
     if abort:
         session = await SESSIONS.pop(repo)
