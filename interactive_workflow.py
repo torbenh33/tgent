@@ -12,6 +12,26 @@ from enum import Enum
 from typing import Any
 
 
+def resolve_repo_path(repo_path: str | None, *, discover_git_root: bool = False) -> str:
+    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
+    base = candidate or "."
+    resolved = os.path.realpath(os.path.abspath(os.path.expanduser(base)))
+
+    if discover_git_root:
+        proc = subprocess.run(
+            ["git", "-C", resolved, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            top_level = proc.stdout.strip()
+            if top_level:
+                return os.path.realpath(os.path.abspath(os.path.expanduser(top_level)))
+
+    return resolved
+
+
 class SessionPhase(str, Enum):
     IDLE = "idle"
     STARTING = "starting"
@@ -57,25 +77,13 @@ class InteractiveSession:
         return self.output_task is not None and not self.output_task.done()
 
     @staticmethod
-    def _bridge_repo_path() -> str:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return "."
-        return proc.stdout.strip() or "."
-
-    @staticmethod
     def bridge_call(edit_paths: list[str], socket_path: str, default_timeout_s: int, repo_path: str = "") -> int:
         timeout_s = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", str(default_timeout_s)))
 
-        resolved_repo_path = repo_path.strip() if isinstance(repo_path, str) else ""
+        resolved_repo_path = resolve_repo_path(repo_path, discover_git_root=True)
         req = {
             "action": "enqueue_job",
-            "repo_path": resolved_repo_path or InteractiveSession._bridge_repo_path(),
+            "repo_path": resolved_repo_path,
             "edit_paths": [p for p in edit_paths if isinstance(p, str) and p.strip()],
             "timeout_s": max(1, timeout_s),
         }
@@ -481,12 +489,6 @@ class InteractiveSessionManager:
             return self._sessions.pop(repo_path, None)
 
 
-def _normalize_repo_path(repo_path: str | None) -> str:
-    candidate = repo_path.strip() if isinstance(repo_path, str) else ""
-    base = candidate or "."
-    return os.path.realpath(os.path.abspath(os.path.expanduser(base)))
-
-
 class InteractiveBridgeServer:
     def __init__(
         self,
@@ -527,7 +529,7 @@ class InteractiveBridgeServer:
                 await self._write_json_line(writer, {"status": "error", "message": "Unsupported action."})
                 return
 
-            repo_path = _normalize_repo_path(str(req.get("repo_path") or "."))
+            repo_path = resolve_repo_path(str(req.get("repo_path") or "."), discover_git_root=True)
             raw_edit_paths = req.get("edit_paths")
             timeout_s = int(req.get("timeout_s") or 900)
 
