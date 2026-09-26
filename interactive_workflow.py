@@ -493,13 +493,19 @@ class InteractiveBridgeServer:
     def __init__(
         self,
         sessions: InteractiveSessionManager,
-        socket_path: str,
+        socket_path: str | None = None,
         on_request_error: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.sessions = sessions
-        self.socket_path = socket_path
+        self.socket_path = socket_path or os.environ.get(
+            "TGIT_INTERACTIVE_SOCKET",
+            f"/tmp/tgit-interactive-{os.getpid()}.sock",
+        )
         self.on_request_error = on_request_error
         self._server: asyncio.base_events.Server | None = None
+
+    def get_socket_path(self) -> str:
+        return self.socket_path
 
     @property
     def running(self) -> bool:

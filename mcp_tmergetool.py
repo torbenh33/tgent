@@ -10,7 +10,6 @@ from interactive_workflow import InteractiveBridgeServer, InteractiveSession, In
 
 mcp = FastMCP("tgit-mergetool-async")
 
-SOCKET_PATH = os.environ.get("TGIT_INTERACTIVE_SOCKET", "/tmp/tgit-interactive.sock")
 DEFAULT_JOB_TIMEOUT_S = int(os.environ.get("TGIT_INTERACTIVE_TIMEOUT_S", "900"))
 
 SESSIONS = InteractiveSessionManager()
@@ -91,7 +90,6 @@ async def _on_bridge_request_error(_repo_path: str) -> None:
 
 BRIDGE_SERVER = InteractiveBridgeServer(
     sessions=SESSIONS,
-    socket_path=SOCKET_PATH,
     on_request_error=_on_bridge_request_error,
 )
 
@@ -138,12 +136,12 @@ def _make_mergetool_launcher(
         ]
 
         env = dict(os.environ)
-        env["TGIT_INTERACTIVE_SOCKET"] = SOCKET_PATH
+        env["TGIT_INTERACTIVE_SOCKET"] = BRIDGE_SERVER.get_socket_path()
         env["TGIT_INTERACTIVE_TIMEOUT_S"] = str(max(1, int(timeout_seconds)))
 
         session = await SESSIONS.get_or_create(repo, timeout_seconds)
         start_result = await session.start(command=cmd, env=env)
-        start_result["socket_path"] = SOCKET_PATH
+        start_result["socket_path"] = BRIDGE_SERVER.get_socket_path()
         start_result["mode"] = "start"
         return start_result
 
@@ -243,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return InteractiveSession.bridge_call(
             edit_paths=edit_paths,
-            socket_path=os.environ.get("TGIT_INTERACTIVE_SOCKET", SOCKET_PATH),
+            socket_path=os.environ.get("TGIT_INTERACTIVE_SOCKET", BRIDGE_SERVER.get_socket_path()),
             default_timeout_s=DEFAULT_JOB_TIMEOUT_S,
         )
 
