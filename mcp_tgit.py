@@ -1,9 +1,9 @@
 import os
-import re
 import subprocess
 from typing import Any
 
 from fastmcp import FastMCP
+from git_patch_selection import build_selected_patch, normalize_selected_line_numbers
 
 mcp = FastMCP("tgit")
 
@@ -329,126 +329,7 @@ async def git_status_context() -> dict:
     }
 
 
-_HUNK_HEADER_RE = re.compile(
-    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
-)
 
-
-def _build_selected_patch(
-    diff_text: str,
-    selected_old_lines: set[int],
-    selected_new_lines: set[int],
-) -> str:
-    lines = diff_text.splitlines()
-    if not lines:
-        return ""
-
-    try:
-        first_hunk_idx = next(i for i, line in enumerate(lines) if line.startswith("@@ "))
-    except StopIteration:
-        return ""
-
-    preamble = lines[:first_hunk_idx]
-    hunks: list[str] = []
-
-    i = first_hunk_idx
-    while i < len(lines):
-        header_line = lines[i]
-        match = _HUNK_HEADER_RE.match(header_line)
-        if not match:
-            i += 1
-            continue
-
-        old_cur = int(match.group("old_start"))
-        new_cur = int(match.group("new_start"))
-        i += 1
-
-        group: list[dict[str, Any]] = []
-        grouped_entries: list[list[dict[str, Any]]] = []
-
-        while i < len(lines) and not lines[i].startswith("@@ "):
-            raw = lines[i]
-            prefix = raw[:1]
-
-            if prefix == "-":
-                entry = {
-                    "raw": raw,
-                    "kind": "-",
-                    "old_ref": old_cur,
-                    "new_ref": None,
-                    "old_before": old_cur,
-                    "new_before": new_cur,
-                }
-                old_cur += 1
-            elif prefix == "+":
-                entry = {
-                    "raw": raw,
-                    "kind": "+",
-                    "old_ref": None,
-                    "new_ref": new_cur,
-                    "old_before": old_cur,
-                    "new_before": new_cur,
-                }
-                new_cur += 1
-            elif prefix == " ":
-                old_cur += 1
-                new_cur += 1
-                if group:
-                    grouped_entries.append(group)
-                    group = []
-                i += 1
-                continue
-            else:
-                if group:
-                    grouped_entries.append(group)
-                    group = []
-                i += 1
-                continue
-
-            include = (
-                entry["kind"] == "-" and entry["old_ref"] in selected_old_lines
-            ) or (
-                entry["kind"] == "+" and entry["new_ref"] in selected_new_lines
-            )
-
-            if include:
-                group.append(entry)
-            elif group:
-                grouped_entries.append(group)
-                group = []
-
-            i += 1
-
-        if group:
-            grouped_entries.append(group)
-
-        for entries in grouped_entries:
-            old_count = sum(1 for e in entries if e["kind"] == "-")
-            new_count = sum(1 for e in entries if e["kind"] == "+")
-
-            if old_count:
-                old_start = next(e["old_ref"] for e in entries if e["kind"] == "-")
-            else:
-                old_start = entries[0]["old_before"]
-
-            if new_count:
-                new_start = next(e["new_ref"] for e in entries if e["kind"] == "+")
-            else:
-                new_start = entries[0]["new_before"]
-
-            hunks.append(
-                "\n".join(
-                    [
-                        f"@@ -{old_start},{old_count} +{new_start},{new_count} @@",
-                        *(e["raw"] for e in entries),
-                    ]
-                )
-            )
-
-    if not hunks:
-        return ""
-
-    return "\n".join([*preamble, *hunks, ""])
 
 
 @mcp.tool()
@@ -464,12 +345,13 @@ def stage_lines(
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
 
-    selected_old_lines = {int(line) for line in old_line_numbers if int(line) > 0}
-    selected_new_lines = {int(line) for line in new_line_numbers if int(line) > 0}
-    if not selected_old_lines and not selected_new_lines:
+    selected_old_lines, selected_new_lines, selection_error = normalize_selected_line_numbers(
+        old_line_numbers,
+        new_line_numbers,
+    )
+    if selection_error:
         return {
             "status": "error",
-            "message": "At least one positive old or new line number is required.",
         }
 
     diff_proc = _git_command(repo_path, ["diff", "--no-color", "-U0", "--", path])
@@ -481,7 +363,7 @@ def stage_lines(
             "repo_path": repo_path,
         }
 
-    patch = _build_selected_patch(diff_proc.stdout, selected_old_lines, selected_new_lines)
+    patch = build_selected_patch(diff_proc.stdout, selected_old_lines, selected_new_lines)
     if not patch:
         return {
             "status": "ok",
@@ -531,12 +413,13 @@ def unstage_lines(
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
 
-    selected_old_lines = {int(line) for line in old_line_numbers if int(line) > 0}
-    selected_new_lines = {int(line) for line in new_line_numbers if int(line) > 0}
-    if not selected_old_lines and not selected_new_lines:
+    selected_old_lines, selected_new_lines, selection_error = normalize_selected_line_numbers(
+        old_line_numbers,
+        new_line_numbers,
+    )
+    if selection_error:
         return {
             "status": "error",
-            "message": "At least one positive old or new line number is required.",
         }
 
     diff_proc = _git_command(repo_path, ["diff", "--cached", "--no-color", "-U0", "--", path])
@@ -548,7 +431,7 @@ def unstage_lines(
             "repo_path": repo_path,
         }
 
-    patch = _build_selected_patch(diff_proc.stdout, selected_old_lines, selected_new_lines)
+    patch = build_selected_patch(diff_proc.stdout, selected_old_lines, selected_new_lines)
     if not patch:
         return {
             "status": "ok",
