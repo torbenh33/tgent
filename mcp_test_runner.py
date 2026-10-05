@@ -16,7 +16,7 @@ async def run_unittests(modpath: str) -> dict:
     if not os.path.exists(modpath):
         return {"status": "error", "message": f"Module file not found at {modpath}"}
 
-    test_dir = os.path.dirname(modpath) or "."
+    test_dir = modpath or "."
     pattern = os.path.basename(modpath)
 
     return await run_subprocess(
