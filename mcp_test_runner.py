@@ -27,6 +27,25 @@ async def run_unittests(modpath: str) -> dict:
         "-s",
         test_dir,
         "-p",
+@mcp.resource("pytest://{project_dir}")
+async def run_pytest(project_dir: str) -> dict:
+    """Run pytest discovery, defaulting an empty project directory to the current directory."""
+    target_dir = project_dir.strip() if isinstance(project_dir, str) and project_dir.strip() else "."
+
+    return await run_subprocess(
+        sys.executable,
+        "-m",
+        "pytest",
+        "-vv",
+        "--rootdir",
+        target_dir,
+    )
+
+
+@mcp.resource("pytest://")
+async def run_pytest_default() -> dict:
+    """Run pytest discovery in the current directory."""
+    return await run_pytest(".")
         pattern,
     )
 
