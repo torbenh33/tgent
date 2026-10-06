@@ -17,7 +17,6 @@ async def run_unittests(modpath: str) -> dict:
         return {"status": "error", "message": f"Module file not found at {modpath}"}
 
     test_dir = modpath or "."
-    pattern = os.path.basename(modpath)
 
     return await run_subprocess(
         sys.executable,
@@ -26,7 +25,8 @@ async def run_unittests(modpath: str) -> dict:
         "discover",
         "-s",
         test_dir,
-        "-p",
+    )
+
 @mcp.resource("pytest://{project_dir}")
 async def run_pytest(project_dir: str) -> dict:
     """Run pytest discovery, defaulting an empty project directory to the current directory."""
@@ -46,8 +46,6 @@ async def run_pytest(project_dir: str) -> dict:
 async def run_pytest_default() -> dict:
     """Run pytest discovery in the current directory."""
     return await run_pytest(".")
-        pattern,
-    )
 
 
 @mcp.resource("doctests://{modpath}")
