@@ -328,10 +328,6 @@ async def git_status_context() -> dict:
         "repos": repos,
     }
 
-
-
-
-
 @mcp.tool()
 def stage_lines(
     path: str,
@@ -352,6 +348,7 @@ def stage_lines(
     if selection_error:
         return {
             "status": "error",
+            "message": selection_error,
         }
 
     diff_proc = _git_command(repo_path, ["diff", "--no-color", "-U0", "--", path])
@@ -420,6 +417,7 @@ def unstage_lines(
     if selection_error:
         return {
             "status": "error",
+            "message": selection_error,
         }
 
     diff_proc = _git_command(repo_path, ["diff", "--cached", "--no-color", "-U0", "--", path])
@@ -436,7 +434,7 @@ def unstage_lines(
         return {
             "status": "ok",
             "message": "No matching staged lines found to unstage.",
-            "repo_path": repo_path,
+
             "path": path,
             "unstaged_old_lines": [],
             "unstaged_new_lines": [],
