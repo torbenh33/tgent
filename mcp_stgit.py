@@ -285,6 +285,31 @@ def stgit_redo(
     return _run_stg(repo_path, args, "redo")
     """Pop the top patch, or pop patches through the named patch, off the stack."""
     args = ["pop"]
+@mcp.tool()
+def stgit_sink(
+    patches: list[str] | None = None,
+    target: str | None = None,
+    nopush: bool = False,
+    keep: bool = False,
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Send selected patches deeper down the stack.
+
+    ``target`` places them below a named patch. ``nopush`` leaves them unapplied,
+    while ``keep`` preserves local changes.
+    """
+    selected = [item.strip() for item in (patches or []) if isinstance(item, str) and item.strip()]
+    clean_target = target.strip() if isinstance(target, str) else ""
+    args = ["sink"]
+    if clean_target:
+        args.extend(["--to", clean_target])
+    if nopush:
+        args.append("--nopush")
+    if keep:
+        args.append("--keep")
+    if selected:
+        args.extend(["--", *selected])
+    return _run_stg(repo_path, args, "sink")
     if isinstance(patch, str) and patch.strip():
         args.append(patch.strip())
     return _run_stg(repo_path, args, "pop")
