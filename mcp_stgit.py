@@ -263,8 +263,6 @@ def stgit_undo(
         args.append("--hard")
     return _run_stg(repo_path, args, "undo")
 @mcp.tool()
-def stgit_pop(patch: str | None = None, repo_path: str = ".") -> dict[str, Any]:
-@mcp.tool()
 def stgit_redo(
     number: int | None = None,
     hard: bool = False,
@@ -283,8 +281,6 @@ def stgit_redo(
     if hard:
         args.append("--hard")
     return _run_stg(repo_path, args, "redo")
-    """Pop the top patch, or pop patches through the named patch, off the stack."""
-    args = ["pop"]
 @mcp.tool()
 def stgit_sink(
     patches: list[str] | None = None,
@@ -310,8 +306,6 @@ def stgit_sink(
     if selected:
         args.extend(["--", *selected])
     return _run_stg(repo_path, args, "sink")
-    if isinstance(patch, str) and patch.strip():
-        args.append(patch.strip())
 @mcp.tool()
 def stgit_float(
     patches: list[str] | None = None,
@@ -345,6 +339,12 @@ def stgit_goto(patch: str, repo_path: str = ".") -> dict[str, Any]:
     """Move the applied stack to the named patch."""
     clean_patch = patch.strip() if isinstance(patch, str) else ""
     if not clean_patch:
+@mcp.tool()
+def stgit_pop(patch: str | None = None, repo_path: str = ".") -> dict[str, Any]:
+    """Pop the top patch, or pop patches through the named patch, off the stack."""
+    args = ["pop"]
+    if isinstance(patch, str) and patch.strip():
+        args.append(patch.strip())
         return {"status": "error", "message": "Patch name must be provided."}
     return _run_stg(repo_path, ["goto", clean_patch], "goto")
 
