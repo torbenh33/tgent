@@ -244,6 +244,25 @@ def stgit_push(
 
 
 @mcp.tool()
+def stgit_undo(
+    number: int | None = None,
+    hard: bool = False,
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Undo the last StGit operation, or the last ``number`` operations.
+
+    Set ``hard`` to discard changes in the index and worktree.
+    """
+    if number is not None and (not isinstance(number, int) or isinstance(number, bool) or number < 1):
+        return {"status": "error", "message": "number must be a positive integer."}
+
+    args = ["undo"]
+    if number is not None:
+        args.extend(["--number", str(number)])
+    if hard:
+        args.append("--hard")
+    return _run_stg(repo_path, args, "undo")
+@mcp.tool()
 def stgit_pop(patch: str | None = None, repo_path: str = ".") -> dict[str, Any]:
     """Pop the top patch, or pop patches through the named patch, off the stack."""
     args = ["pop"]
