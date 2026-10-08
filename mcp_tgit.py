@@ -881,6 +881,48 @@ def commit_staged(message: str, repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
+def amend_commit(message: str, repo_path: str = ".") -> dict[str, Any]:
+    """Amend the current commit using the supplied message and any staged changes.
+
+    The message is passed directly to Git, so no editor is opened. Staged
+    changes are included when present; with no staged changes, this only updates
+    the current commit message. The commit is created with signoff enabled (-s),
+    matching ``commit_staged``.
+    """
+    if not isinstance(message, str) or not message.strip():
+        return {"status": "error", "message": "Commit message must be provided."}
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+
+    head_check = _git_command(repo_path, ["rev-parse", "--verify", "HEAD^{commit}"])
+    if head_check.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Cannot amend because HEAD does not resolve to a commit.",
+            "stderr": head_check.stderr,
+            "repo_path": repo_path,
+        }
+
+    amend_proc = _git_command(repo_path, ["commit", "--amend", "-s", "-m", message.strip()])
+    if amend_proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "git commit --amend failed.",
+            "stdout": amend_proc.stdout,
+            "stderr": amend_proc.stderr,
+            "repo_path": repo_path,
+        }
+
+    return {
+        "status": "ok",
+        "message": "Commit amended.",
+        "repo_path": repo_path,
+        "stdout": amend_proc.stdout,
+        "stderr": amend_proc.stderr,
+    }
+
+
+@mcp.tool()
 def rebase_log(
     base_ref: str = "main",
     repo_path: str = ".",
