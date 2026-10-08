@@ -15,12 +15,14 @@ import json
 import mailbox
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from email.message import Message
+from email.utils import getaddresses
 from pathlib import Path
 from typing import Any
 
@@ -229,14 +231,11 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     if not isinstance(revisions, list):
         return {"status": "error", "message": "Series manifest has invalid revisions."}
     revision_number = len(revisions) + 1
-    reply_to = _git(repo, ["config", "--get", "tgit.reviewReplyTo"])
-    if reply_to.returncode:
-        reply_to = _git(repo, ["config", "--get", "user.email"])
-    reply_to_address = reply_to.stdout.strip()
+    reply_to_address = os.environ.get("TGIT_REVIEW_REPLY_TO", "").strip()
     if not reply_to_address or "\n" in reply_to_address or "\r" in reply_to_address:
         return {
             "status": "error",
-            "message": "Set tgit.reviewReplyTo or user.email to a valid reply address.",
+            "message": "Set TGIT_REVIEW_REPLY_TO to this agent's reply address.",
         }
 
     exported = _git_bytes(
@@ -396,6 +395,82 @@ def get_unmatched_reviews() -> dict[str, Any]:
     return {"status": "ok", "reviews": [item for item in _reviews() if item["series_id"] is None]}
 
 
+def _maildir_messages(paths: ReviewPaths) -> list[tuple[Path, bytes]]:
+    """Read message files from both Maildir arrival and seen folders."""
+    messages: list[tuple[Path, bytes]] = []
+    for folder in ("new", "cur"):
+        for path in (paths.mail_spool / folder).iterdir():
+            if not path.is_file():
+                continue
+            try:
+                messages.append((path, path.read_bytes()))
+            except OSError:
+                continue
+    return messages
+
+
+@mcp.tool()
+def wait_for_mail(timeout_seconds: int = 300) -> dict[str, Any]:
+    """Wait for a newly arrived Maildir message addressed to this agent.
+
+    The agent's address is taken from ``TGIT_REVIEW_REPLY_TO``. A message is
+    eligible when that address appears in its To or Cc header.
+    """
+    if timeout_seconds < 0:
+        return {"status": "error", "message": "timeout_seconds must not be negative."}
+    reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "").strip()
+    agent_addresses = {
+        address.casefold()
+        for _name, address in getaddresses([reply_to])
+        if address
+    }
+    if not agent_addresses:
+        return {"status": "error", "message": "Set TGIT_REVIEW_REPLY_TO to this agent's reply address."}
+
+    _state_dirs()
+    # Existing mail must not immediately satisfy a wait; compare content so a
+    # Maildir rename from new/ to cur/ does not appear to be a fresh message.
+    existing = {hashlib.sha256(raw).digest() for _path, raw in _maildir_messages(DEFAULT_PATHS)}
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        for path, raw in _maildir_messages(DEFAULT_PATHS):
+            digest = hashlib.sha256(raw).digest()
+            if digest in existing:
+                continue
+            existing.add(digest)
+            try:
+                message = email.message_from_bytes(raw, policy=email.policy.default)
+            except email.errors.MessageError:
+                continue
+            recipients = {
+                address.casefold()
+                for _name, address in getaddresses([
+                    str(message.get("To", "")),
+                    str(message.get("Cc", "")),
+                ])
+                if address
+            }
+            if not agent_addresses.intersection(recipients):
+                continue
+            return {
+                "status": "ok",
+                "message": {
+                    "message_id": _message_id(message),
+                    "from": str(message.get("From", "")),
+                    "to": str(message.get("To", "")),
+                    "cc": str(message.get("Cc", "")),
+                    "date": str(message.get("Date", "")),
+                    "subject": str(message.get("Subject", "")),
+                    "body": _body(message),
+                    "raw_path": str(path),
+                },
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"status": "timeout", "message": "No new mail addressed to this agent arrived before the timeout."}
+        time.sleep(min(1.0, remaining))
+
+
 @mcp.tool()
 def acknowledge_reviews(series_id: str, review_ids: list[str]) -> dict[str, Any]:
     """Mark review messages as seen by the agent, without marking comments fixed."""
@@ -431,7 +506,8 @@ def capture_mail() -> int:
         # A stable content-addressed filename makes repeated Mutt submissions idempotent.
         target = MAIL_SPOOL / "new" / digest
         temporary = MAIL_SPOOL / "tmp" / f"{digest}.{os.getpid()}.{os.urandom(4).hex()}"
-        if not target.exists() and not (MAIL_SPOOL / "cur" / digest).exists():
+        already_captured = target.exists() or any((MAIL_SPOOL / "cur").glob(f"{digest}*"))
+        if not already_captured:
             _atomic_write(temporary, raw)
             try:
                 os.replace(temporary, target)
@@ -446,9 +522,65 @@ def capture_mail() -> int:
         return 1
 
 
+def _install_mutt_sendmail(path: str) -> int:
+    """Install an executable wrapper for Mutt's local sendmail command."""
+    target = Path(path).expanduser().absolute()
+    python = shlex.quote(os.path.abspath(sys.executable))
+    script = shlex.quote(os.path.realpath(__file__))
+    default_maildir = shlex.quote(str(DEFAULT_PATHS.mail_spool))
+    mutt_sendmail = str(target).replace("\\", "\\\\").replace('"', '\\"')
+    sendmail_setting = shlex.quote(f'set sendmail="{mutt_sendmail}"')
+    smtp_setting = shlex.quote('set smtp_url=""')
+    contents = (
+        "#!/bin/sh\n"
+        "# Mutt calls this with sendmail flags; no flags launches the review Maildir.\n"
+        "if [ \"$#\" -gt 0 ]; then\n"
+        "    case \"$1\" in\n"
+        f"        -*) exec {python} {script} --capture-mail \"$@\" ;;\n"
+        "    esac\n"
+        "    maildir=$1\n"
+        "    shift\n"
+        "else\n"
+        "    maildir=${TGIT_REVIEW_MAILDIR:-}\n"
+        f"    [ -n \"$maildir\" ] || maildir={default_maildir}\n"
+        "fi\n"
+        f"exec mutt -e {sendmail_setting} -e {smtp_setting} -f \"$maildir\" \"$@\"\n"
+    )
+    try:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{target.name}-", dir=target.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(contents)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), 0o700)
+            os.replace(temporary, target)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    except OSError as err:
+        print(f"Could not install Mutt sendmail wrapper: {err}", file=sys.stderr)
+        return 1
+
+    mutt_path = str(target).replace("\\\\", "\\\\\\\\").replace('"', '\\"')
+    print(f"Installed Mutt sendmail/launcher wrapper: {target}")
+    print(f'Run `{target}` to open the review Maildir in Mutt.')
+    print(f'Run `{target} /path/to/Maildir` to open a specific Maildir.')
+    print("Mutt sendmail setting: handled by the wrapper when invoked with sendmail flags.")
+    return 0
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Git patch review MCP server")
     parser.add_argument("--capture-mail", action="store_true", help="Capture sendmail stdin locally; do not deliver it")
+    parser.add_argument(
+        "--install-mutt-sendmail",
+        metavar="PATH",
+        help="write an executable Mutt sendmail wrapper at PATH",
+    )
     # Mutt appends normal sendmail flags and recipient addresses to this command.
     args, _mutt_sendmail_args = parser.parse_known_args(argv)
     return args
@@ -456,6 +588,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+    if args.install_mutt_sendmail:
+        return _install_mutt_sendmail(args.install_mutt_sendmail)
     if args.capture_mail:
         return capture_mail()
     mcp.run()
