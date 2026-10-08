@@ -58,7 +58,7 @@ DEFAULT_PATHS = ReviewPaths.from_environment()
 STATE_ROOT = DEFAULT_PATHS.state_root
 SERIES_ROOT = DEFAULT_PATHS.series_root
 MAIL_SPOOL = DEFAULT_PATHS.mail_spool
-MESSAGE_ID_RE = re.compile(r"<[^>\\s]+>")
+MESSAGE_ID_RE = re.compile(r"<[^>\s]+>")
 SERIES_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 
 
