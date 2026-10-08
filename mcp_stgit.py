@@ -312,6 +312,31 @@ def stgit_sink(
     return _run_stg(repo_path, args, "sink")
     if isinstance(patch, str) and patch.strip():
         args.append(patch.strip())
+@mcp.tool()
+def stgit_float(
+    patches: list[str] | None = None,
+    series: str | None = None,
+    keep: bool = False,
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Push named patches to the top, even if they are already applied.
+
+    Alternatively, provide a series file to rearrange the stack according to it.
+    ``keep`` preserves local changes. Supply either patches or a series file.
+    """
+    selected = [item.strip() for item in (patches or []) if isinstance(item, str) and item.strip()]
+    clean_series = series.strip() if isinstance(series, str) else ""
+    if selected and clean_series:
+        return {"status": "error", "message": "Choose either patches or series, not both."}
+
+    args = ["float"]
+    if clean_series:
+        args.extend(["--series", clean_series])
+    if keep:
+        args.append("--keep")
+    if selected:
+        args.extend(["--", *selected])
+    return _run_stg(repo_path, args, "float")
     return _run_stg(repo_path, args, "pop")
 
 
