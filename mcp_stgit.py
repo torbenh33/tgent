@@ -104,6 +104,38 @@ def stgit_status(repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
+def stgit_resolved(paths: list[str], repo_path: str = ".") -> dict[str, Any]:
+    """Mark conflicted paths as resolved, equivalent to ``git add``."""
+    selected = [item.strip() for item in paths if isinstance(item, str) and item.strip()]
+    if not selected:
+        return {"status": "error", "message": "At least one path must be provided."}
+
+    target_repo = _resolve_repo_path(repo_path)
+    proc = _git_command(target_repo, ["rev-parse", "--show-toplevel"])
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Path is not inside a Git repository.",
+            "repo_path": target_repo,
+            "stderr": proc.stderr.strip(),
+        }
+
+    repo = os.path.realpath(proc.stdout.strip())
+    args = ["add", "--", *selected]
+    proc = _git_command(repo, args)
+    result = {
+        "status": "ok" if proc.returncode == 0 else "error",
+        "repo_path": repo,
+        "command": ["git", *args],
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+    if proc.returncode != 0:
+        result["message"] = "Git add failed."
+    return result
+
+
+@mcp.tool()
 def stgit_series(repo_path: str = ".") -> dict[str, Any]:
     """List patches in the current StGit stack, including applied and unapplied patches."""
     return _run_stg(repo_path, ["series"], "series")
