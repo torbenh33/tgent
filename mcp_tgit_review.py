@@ -82,6 +82,10 @@ def _state_dirs(paths: ReviewPaths = DEFAULT_PATHS) -> None:
     """Create the state directories with private permissions."""
     for path in (paths.state_root, paths.series_root, paths.mail_spool):
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # The spool itself is a Maildir, so captured messages can be opened directly
+    # by Mutt and new submissions appear in its new/ folder.
+    for name in ("cur", "new", "tmp"):
+        (paths.mail_spool / name).mkdir(mode=0o700, exist_ok=True)
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -225,9 +229,22 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     if not isinstance(revisions, list):
         return {"status": "error", "message": "Series manifest has invalid revisions."}
     revision_number = len(revisions) + 1
+    reply_to = _git(repo, ["config", "--get", "tgit.reviewReplyTo"])
+    if reply_to.returncode:
+        reply_to = _git(repo, ["config", "--get", "user.email"])
+    reply_to_address = reply_to.stdout.strip()
+    if not reply_to_address or "\n" in reply_to_address or "\r" in reply_to_address:
+        return {
+            "status": "error",
+            "message": "Set tgit.reviewReplyTo or user.email to a valid reply address.",
+        }
+
     exported = _git_bytes(
         repo,
-        ["format-patch", "--stdout", "--thread=shallow", "--numbered", "--no-cover-letter", f"{base_sha}..{head_sha}"],
+        [
+            "format-patch", "--stdout", "--thread=shallow", "--numbered", "--no-cover-letter",
+            "--add-header", f"Reply-To: {reply_to_address}", f"{base_sha}..{head_sha}",
+        ],
     )
     if exported.returncode:
         return {
@@ -294,7 +311,14 @@ def _reviews(paths: ReviewPaths = DEFAULT_PATHS) -> list[dict[str, Any]]:
     _state_dirs(paths)
     known = _known_patches(paths)
     output: list[dict[str, Any]] = []
-    for path in sorted(paths.mail_spool.glob("*.eml")):
+    mail_paths = [
+        *paths.mail_spool.glob("*.eml"),  # Read messages from the previous flat-spool format.
+        *paths.mail_spool.joinpath("new").iterdir(),
+        *paths.mail_spool.joinpath("cur").iterdir(),
+    ]
+    for path in sorted(mail_paths):
+        if not path.is_file():
+            continue
         try:
             raw = path.read_bytes()
             message = email.message_from_bytes(raw, policy=email.policy.default)
@@ -405,9 +429,17 @@ def capture_mail() -> int:
         _state_dirs()
         digest = hashlib.sha256(raw).hexdigest()
         # A stable content-addressed filename makes repeated Mutt submissions idempotent.
-        target = MAIL_SPOOL / f"{digest}.eml"
-        if not target.exists():
-            _atomic_write(target, raw)
+        target = MAIL_SPOOL / "new" / digest
+        temporary = MAIL_SPOOL / "tmp" / f"{digest}.{os.getpid()}.{os.urandom(4).hex()}"
+        if not target.exists() and not (MAIL_SPOOL / "cur" / digest).exists():
+            _atomic_write(temporary, raw)
+            try:
+                os.replace(temporary, target)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
         return 0
     except OSError as err:
         print(f"tgit review capture: {err}", file=sys.stderr)
