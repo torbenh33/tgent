@@ -30,13 +30,17 @@ def _git_command(repo_path: str, args: list[str]) -> subprocess.CompletedProcess
         check=False,
     )
 
-
-def _stg_command(repo_path: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+def _stg_command(
+    repo_path: str,
+    args: list[str],
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["stg", *args],
         cwd=_resolve_repo_path(repo_path),
         capture_output=True,
         text=True,
+        input=input_text,
         check=False,
     )
 
@@ -55,13 +59,17 @@ def _validate_repo(repo_path: str) -> tuple[str | None, dict[str, Any] | None]:
         }
     return os.path.realpath(proc.stdout.strip()), None
 
-
-def _run_stg(repo_path: str, args: list[str], action: str) -> dict[str, Any]:
+def _run_stg(
+    repo_path: str,
+    args: list[str],
+    action: str,
+    input_text: str | None = None,
+) -> dict[str, Any]:
     repo, error = _validate_repo(repo_path)
     if error:
         return error
     assert repo is not None
-    proc = _stg_command(repo, args)
+    proc = _stg_command(repo, args, input_text)
     if proc.returncode != 0:
         return {
             "status": "error",
@@ -231,6 +239,84 @@ def stgit_diff(patch: str | None = None, repo_path: str = ".") -> dict[str, Any]
     if isinstance(patch, str) and patch.strip():
         args.append(patch.strip())
     return _run_stg(repo_path, args, "diff")
+
+
+@mcp.tool()
+def stgit_fold(
+    patch_file: str | None = None,
+    patch_text: str | None = None,
+    threeway: bool = False,
+    base: str | None = None,
+    strip: int = 1,
+    reject: bool = False,
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Integrate a GNU diff patch into the current patch using ``stg fold``.
+
+    If ``patch_file`` is omitted, StGit reads from standard input. Alternatively,
+    provide ``patch_text`` to pass patch contents on standard input. ``threeway``
+    performs a three-way merge, ``base`` selects the merge base,
+    ``strip`` controls leading path components to remove, and ``reject`` leaves
+    rejected hunks in ``*.rej`` files.
+    """
+    if not isinstance(strip, int) or isinstance(strip, bool) or strip < 0:
+        return {"status": "error", "message": "strip must be a non-negative integer."}
+
+    clean_base = base.strip() if isinstance(base, str) else ""
+    clean_file = patch_file.strip() if isinstance(patch_file, str) else ""
+    clean_text = patch_text if isinstance(patch_text, str) else None
+    if clean_file and clean_text is not None:
+        return {"status": "error", "message": "Choose either patch_file or patch_text, not both."}
+
+    args = ["fold"]
+    if threeway:
+        args.append("--threeway")
+    if clean_base:
+        args.extend(["--base", clean_base])
+    args.extend(["--strip", str(strip)])
+    if reject:
+        args.append("--reject")
+    if clean_file:
+        args.extend(["--", clean_file])
+    return _run_stg(repo_path, args, "fold", input_text=clean_text)
+
+
+@mcp.tool()
+def stgit_delete(
+    patches: list[str] | None = None,
+    spill: bool = False,
+    branch: str | None = None,
+    top: bool = False,
+    repo_path: str = ".",
+) -> dict[str, Any]:
+    """Delete named patches or the top patch with ``stg delete``.
+
+    ``spill`` leaves patch contents in the index and worktree, and ``branch``
+    selects a branch other than the default.
+    """
+    selected = [item.strip() for item in (patches or []) if isinstance(item, str) and item.strip()]
+    clean_branch = branch.strip() if isinstance(branch, str) else ""
+    if top and selected:
+        return {"status": "error", "message": "Choose either top or named patches, not both."}
+    if not top and not selected:
+        return {"status": "error", "message": "Provide patches or set top to true."}
+
+    args = ["delete"]
+    if spill:
+        args.append("--spill")
+    if clean_branch:
+        args.extend(["--branch", clean_branch])
+    if top:
+        args.append("--top")
+    else:
+        args.extend(["--", *selected])
+    return _run_stg(repo_path, args, "delete")
+
+
+@mcp.tool()
+def stgit_init(repo_path: str = ".") -> dict[str, Any]:
+    """Initialize the current Git branch for use with StGit using ``stg init``."""
+    return _run_stg(repo_path, ["init"], "init")
 
 
 @mcp.tool()
