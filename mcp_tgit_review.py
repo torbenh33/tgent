@@ -147,10 +147,43 @@ def _parse_mbox(raw: bytes) -> list[Message]:
         finally:
             box.close()
 
+def _serialize_mbox(messages: list[Message]) -> bytes:
+    """Serialize messages as an mbox after any header/body edits."""
+    with tempfile.NamedTemporaryFile() as handle:
+        box = mailbox.mbox(handle.name)
+        try:
+            for message in messages:
+                box.add(message)
+            box.flush()
+        finally:
+            box.close()
+        handle.seek(0)
+        return handle.read()
+
 
 def _message_id(message: Message) -> str | None:
     value = message.get("Message-ID")
     return str(value).strip() if value else None
+
+
+def _import_patches_to_maildir(patches: list[Message], paths: ReviewPaths = DEFAULT_PATHS) -> None:
+    """Add exported patches to the shared Maildir, without duplicate Message-IDs."""
+    _state_dirs(paths)
+    maildir = mailbox.Maildir(paths.mail_spool, create=True)
+    try:
+        existing_ids = {
+            message_id
+            for key in maildir.iterkeys()
+            if (message := maildir.get_message(key)) is not None
+            and (message_id := _message_id(message)) is not None
+        }
+        for patch in patches:
+            message_id = _message_id(patch)
+            if message_id is not None and message_id not in existing_ids:
+                maildir.add(patch)
+                existing_ids.add(message_id)
+    finally:
+        maildir.close()
 
 
 def _headers(message: Message, *names: str) -> list[str]:
@@ -176,11 +209,22 @@ def _body(message: Message) -> str:
 
 
 @mcp.tool()
-def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", series_id: str | None = None) -> dict[str, Any]:
+def export_patch_series(
+    base: str,
+    head: str = "HEAD",
+    repo_path: str = ".",
+    series_id: str | None = None,
+    cover_letter: str = "",
+) -> dict[str, Any]:
     """Export ``base..head`` as an mbox, creating or revising a review series.
 
-    This only reads committed Git history and does not alter the worktree.  Pass
-    the returned mbox_path to Mutt; pass its series_id again for a new revision.
+    The mbox includes a numbered cover letter (patch 0) followed by the patches.
+    Git generates patch 0 with the series summary and diffstat. If supplied,
+    ``cover_letter`` uses its first line as the subject and remaining lines as
+    introductory text in place of Git's blurb placeholder, preserving the
+    generated summary and diffstat. This only reads committed Git
+    history and does not alter the worktree. Pass the returned mbox_path to Mutt;
+    pass its series_id again for a new revision.
     """
     repo, error = _resolve_repo(repo_path)
     if error:
@@ -231,7 +275,7 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     if not isinstance(revisions, list):
         return {"status": "error", "message": "Series manifest has invalid revisions."}
     revision_number = len(revisions) + 1
-    reply_to_address = os.environ.get("TGIT_REVIEW_REPLY_TO", "").strip()
+    reply_to_address = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
     if not reply_to_address or "\n" in reply_to_address or "\r" in reply_to_address:
         return {
             "status": "error",
@@ -241,7 +285,7 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     exported = _git_bytes(
         repo,
         [
-            "format-patch", "--stdout", "--thread=shallow", "--numbered", "--no-cover-letter",
+            "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter",
             "--add-header", f"Reply-To: {reply_to_address}", f"{base_sha}..{head_sha}",
         ],
     )
@@ -259,12 +303,24 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     except (OSError, mailbox.Error, email.errors.MessageError) as err:
         return {"status": "error", "message": f"Could not parse generated mbox: {err}"}
 
+    if cover_letter:
+        title, separator, body = cover_letter.strip().partition("\n")
+        if not title.strip():
+            return {"status": "error", "message": "The cover letter must start with a subject line."}
+        patches[0].replace_header("Subject", f"[PATCH 0/{commit_count}] {title.strip()}")
+        generated_body = _body(patches[0])
+        introduction = body.strip() if separator else ""
+        generated_body = generated_body.replace("*** BLURB HERE ***", introduction, 1)
+        patches[0].set_content(generated_body)
+        raw = _serialize_mbox(patches)
+
     patch_ids = [_message_id(patch) for patch in patches]
-    if len(patches) != commit_count or any(patch_id is None for patch_id in patch_ids):
+    if len(patches) != commit_count + 1 or any(patch_id is None for patch_id in patch_ids):
         return {
             "status": "error",
             "message": "Generated mbox must contain one Message-ID per patch.",
             "commit_count": commit_count,
+            "expected_patch_count": commit_count + 1,
             "patch_count": len(patches),
         }
 
@@ -281,6 +337,10 @@ def export_patch_series(base: str, head: str = "HEAD", repo_path: str = ".", ser
     }
     revisions.append(revision)
     _write_manifest(manifest_path, manifest)
+    try:
+        _import_patches_to_maildir(patches)
+    except (OSError, mailbox.Error) as err:
+        return {"status": "error", "message": f"Could not add patches to the review Maildir: {err}", "series_id": series_id}
     return {"status": "ok", "series_id": series_id, **revision}
 
 def _known_patches(paths: ReviewPaths = DEFAULT_PATHS) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
@@ -309,6 +369,7 @@ def _reviews(paths: ReviewPaths = DEFAULT_PATHS) -> list[dict[str, Any]]:
     """
     _state_dirs(paths)
     known = _known_patches(paths)
+    known_patch_ids = {patch_id for patch_id, _manifest, _revision in known}
     output: list[dict[str, Any]] = []
     mail_paths = [
         *paths.mail_spool.glob("*.eml"),  # Read messages from the previous flat-spool format.
@@ -323,9 +384,13 @@ def _reviews(paths: ReviewPaths = DEFAULT_PATHS) -> list[dict[str, Any]]:
             message = email.message_from_bytes(raw, policy=email.policy.default)
         except (OSError, email.errors.MessageError):
             continue
+        message_id = _message_id(message)
+        # Outbound patch messages share this Maildir with replies, but are not reviews.
+        if message_id in known_patch_ids:
+            continue
         thread_ids = _headers(message, "In-Reply-To", "References")
         match = next((entry for thread_id in thread_ids for entry in known if entry[0] == thread_id), None)
-        review_id = _message_id(message) or f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        review_id = message_id or f"sha256:{hashlib.sha256(raw).hexdigest()}"
         patch_id, manifest, revision = match if match is not None else (None, None, None)
         acknowledged = bool(manifest) and review_id in manifest.get("acknowledged_review_ids", [])
         output.append({
@@ -418,7 +483,7 @@ def wait_for_mail(timeout_seconds: int = 300) -> dict[str, Any]:
     """
     if timeout_seconds < 0:
         return {"status": "error", "message": "timeout_seconds must not be negative."}
-    reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "").strip()
+    reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
     agent_addresses = {
         address.casefold()
         for _name, address in getaddresses([reply_to])
