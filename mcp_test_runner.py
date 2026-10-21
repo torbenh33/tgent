@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
 from fastmcp import FastMCP
 import os
 import sys
+import uuid
 
 from test_subprocess import run_subprocess
 
@@ -27,25 +29,45 @@ async def run_unittests(modpath: str) -> dict:
         test_dir,
     )
 
+async def _run_pytest(project_dir: str) -> dict:
+    """Run pytest and annotate the result with this invocation's identity and context."""
+    target_dir = project_dir.strip() if isinstance(project_dir, str) and project_dir.strip() else "."
+    started_at = datetime.now(timezone.utc)
+    run_id = str(uuid.uuid4())
+    command = [sys.executable, "-m", "pytest", "-vv", "--rootdir", target_dir, target_dir]
+    result = await run_subprocess(*command)
+    completed_at = datetime.now(timezone.utc)
+    returncode = result.get("returncode")
+    if returncode == 0:
+        test_status = "passed"
+    elif isinstance(returncode, int):
+        test_status = "failed"
+    else:
+        test_status = "unknown"
+    test_run = {
+        "id": run_id,
+        "fresh_execution": True,
+        "cached": False,
+        "status": test_status,
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "working_directory": os.getcwd(),
+        "project_directory": os.path.abspath(target_dir),
+        "command": command,
+    }
+    return {"test_run": test_run, **result}
+
+
 @mcp.resource("pytest://{project_dir}")
 async def run_pytest(project_dir: str) -> dict:
-    """Run pytest discovery, defaulting an empty project directory to the current directory."""
-    target_dir = project_dir.strip() if isinstance(project_dir, str) and project_dir.strip() else "."
-
-    return await run_subprocess(
-        sys.executable,
-        "-m",
-        "pytest",
-        "-vv",
-        "--rootdir",
-        target_dir,
-    )
+    """Run pytest now and return the result with a unique ID and execution timestamps."""
+    return await _run_pytest(project_dir)
 
 
 @mcp.resource("pytest://")
 async def run_pytest_default() -> dict:
-    """Run pytest discovery in the current directory."""
-    return await run_pytest(".")
+    """Run pytest now in the current directory and annotate this fresh execution."""
+    return await _run_pytest(".")
 
 
 @mcp.resource("doctests://{modpath}")
