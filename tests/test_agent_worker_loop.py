@@ -1,0 +1,260 @@
+"""Fast, deterministic tests for the agent worker model/tool loop."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from agent_controller import AgentController
+from agent_worker import AgentWorker
+
+
+class FakeWorkerClient:
+    """In-memory controller/IPC stand-in with predetermined model responses."""
+
+    def __init__(self, history: list[dict[str, Any]], completions: list[dict[str, Any]]) -> None:
+        self.history = list(history)
+        self.completions = list(completions)
+        self.model_requests: list[dict[str, Any]] = []
+        self.states: list[dict[str, Any]] = []
+        self.awaited_commands: list[dict[str, Any]] = []
+
+    async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "worker.hello":
+            return {"protocol_version": 1, "agent_id": params["agent_id"]}
+        if method == "history.get":
+            return {"history": list(self.history)}
+        if method == "history.append":
+            messages = params["messages"]
+            self.history.extend(messages)
+            return {"appended": len(messages), "message_count": len(self.history)}
+        if method == "agent.update_state":
+            self.states.append(dict(params))
+            return {"state": params["state"]}
+        if method == "model.complete":
+            self.model_requests.append(params)
+            return self.completions.pop(0)
+        if method == "agent.await_command":
+            command = {"command": "shutdown"}
+            self.awaited_commands.append(dict(params))
+            return command
+        raise AssertionError(f"Unexpected IPC method: {method}")
+
+
+def test_worker_runs_tool_call_then_final_response_without_live_model(tmp_path: Path) -> None:
+    project_file = tmp_path / "hello.txt"
+    project_file.write_text("hello from the project\n", encoding="utf-8")
+    tool_call = {
+        "id": "call-read-file",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": json.dumps({"path": "hello.txt"}),
+        },
+    }
+    client = FakeWorkerClient(
+        history=[{"role": "user", "content": "Read hello.txt", "id": "user-message"}],
+        completions=[
+            {
+                "model": "fake-model",
+                "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [tool_call]}}],
+            },
+            {
+                "model": "fake-model",
+                "choices": [{"message": {"role": "assistant", "content": "The file says hello."}}],
+            },
+        ],
+    )
+    worker = AgentWorker(client, tmp_path, "test-agent")  # type: ignore[arg-type]
+
+    asyncio.run(worker.run())
+
+    assert len(client.model_requests) == 2
+    assert client.model_requests[0]["tools"]
+    assert [message["role"] for message in client.history] == ["user", "assistant", "tool", "assistant"]
+    assert client.history[1]["tool_calls"] == [tool_call]
+    tool_result = json.loads(client.history[2]["content"])
+    assert tool_result["content"] == "hello from the project"
+    assert client.history[3]["content"] == "The file says hello."
+    assert any(message.get("role") == "tool" for message in client.model_requests[1]["messages"])
+    assert client.awaited_commands
+    assert client.states[-1]["state"] == "halted"
+
+
+class _IntegrationStore:
+    def __init__(self) -> None:
+        self.metadata = {"max_model_calls": 4}
+        self.updates: list[dict[str, Any]] = []
+
+    def get_metadata(self, _agent_id: str) -> dict[str, Any]:
+        return dict(self.metadata)
+
+    def update_metadata(self, _agent_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        self.updates.append(dict(values))
+        self.metadata.update(values)
+        return dict(self.metadata)
+
+
+class _ControllerWorkerBridge:
+    """Route worker IPC to controller handlers while keeping state in memory."""
+
+    def __init__(self, controller: AgentController, history: list[dict[str, Any]]) -> None:
+        self.controller = controller
+        self.history = list(history)
+        self.states: list[dict[str, Any]] = []
+
+    async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "worker.hello":
+            return await self.controller._hello("test-agent", params)
+        if method == "history.get":
+            return {"history": list(self.history)}
+        if method == "history.append":
+            messages = params["messages"]
+            self.history.extend(messages)
+            return {"appended": len(messages), "message_count": len(self.history)}
+        if method == "model.complete":
+            return await self.controller._model_complete("test-agent", params)
+        if method == "agent.update_state":
+            self.states.append(dict(params))
+            return {"state": params["state"]}
+        if method == "agent.await_command":
+            return {"command": "shutdown"}
+        raise AssertionError(f"Unexpected IPC method: {method}")
+
+
+def test_worker_loop_uses_controller_model_proxy_without_live_model(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("hello through the controller\n", encoding="utf-8")
+    tool_call = {
+        "id": "call-read-file",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": json.dumps({"path": "hello.txt"})},
+    }
+    completions = [
+        {
+            "model": "fake-model",
+            "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [tool_call]}}],
+        },
+        {
+            "model": "fake-model",
+            "choices": [{"message": {"role": "assistant", "content": "The controller-proxied tool found the file."}}],
+        },
+    ]
+    model_requests: list[dict[str, Any]] = []
+
+    def fake_model_callback(params: dict[str, Any]) -> dict[str, Any]:
+        model_requests.append(params)
+        return completions.pop(0)
+
+    controller = AgentController.__new__(AgentController)
+    controller.model_callback = fake_model_callback
+    controller.store = _IntegrationStore()
+    runtime = SimpleNamespace(model_calls=0, lock=asyncio.Lock())
+    controller._runtimes = {"test-agent": runtime}
+    bridge = _ControllerWorkerBridge(
+        controller,
+        [{"role": "user", "content": "Read hello.txt", "id": "user-message"}],
+    )
+    worker = AgentWorker(bridge, tmp_path, "test-agent")  # type: ignore[arg-type]
+
+    asyncio.run(worker.run())
+
+    assert len(model_requests) == 2
+    assert runtime.model_calls == 2
+    assert controller.store.metadata["model_calls"] == 2
+    assert [message["role"] for message in bridge.history] == ["user", "assistant", "tool", "assistant"]
+    tool_result = json.loads(bridge.history[2]["content"])
+    assert tool_result["content"] == "hello through the controller"
+    assert any(message.get("role") == "tool" for message in model_requests[1]["messages"])
+    assert bridge.history[3]["content"] == "The controller-proxied tool found the file."
+    assert bridge.states[-1]["state"] == "halted"
+
+
+def test_worker_resumes_after_patch_review_feedback() -> None:
+    head_commit = "a" * 40
+    patch_call = {
+        "id": "call-submit-patch",
+        "type": "function",
+        "function": {
+            "name": "submit_patch_queue",
+            "arguments": json.dumps({"head_commit": head_commit}),
+        },
+    }
+    completions = [
+        {
+            "model": "fake-model",
+            "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [patch_call]}}],
+        },
+        {
+            "model": "fake-model",
+            "choices": [{"message": {"role": "assistant", "content": "Review feedback addressed."}}],
+        },
+    ]
+
+    class ReviewWorkerClient:
+        def __init__(self) -> None:
+            self.history: list[dict[str, Any]] = [
+                {"role": "user", "content": "Prepare a patch", "id": "user-message"}
+            ]
+            self.model_requests: list[dict[str, Any]] = []
+            self.states: list[dict[str, Any]] = []
+            self.await_count = 0
+
+        async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "worker.hello":
+                return {"protocol_version": 1, "agent_id": params["agent_id"]}
+            if method == "history.get":
+                return {"history": list(self.history)}
+            if method == "history.append":
+                messages = params["messages"]
+                self.history.extend(messages)
+                return {"appended": len(messages), "message_count": len(self.history)}
+            if method == "agent.update_state":
+                self.states.append(dict(params))
+                return {"state": params["state"]}
+            if method == "model.complete":
+                self.model_requests.append(params)
+                return completions.pop(0)
+            if method == "patch.submit":
+                assert params["head_commit"] == head_commit
+                return {"status": "ok"}
+            if method == "agent.await_command":
+                self.await_count += 1
+                if self.await_count == 1:
+                    self.history.append(
+                        {"role": "user", "content": "Please address the naming feedback.", "id": "review-feedback"}
+                    )
+                    return {"command": "review_feedback"}
+                return {"command": "shutdown"}
+            raise AssertionError(f"Unexpected IPC method: {method}")
+
+    client = ReviewWorkerClient()
+    worker = AgentWorker(client, Path.cwd(), "test-agent")  # type: ignore[arg-type]
+
+    asyncio.run(worker.run())
+
+    assert len(client.model_requests) == 2
+    assert client.await_count == 2
+    assert [state["state"] for state in client.states] == [
+        "running",
+        "awaiting_review",
+        "running",
+        "halted",
+        "halted",
+    ]
+    assert [message["role"] for message in client.history] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    patch_result = json.loads(client.history[2]["content"])
+    assert patch_result == {"status": "ok"}
+    assert any(
+        message.get("content") == "Please address the naming feedback."
+        for message in client.model_requests[1]["messages"]
+    )
+    assert client.history[-1]["content"] == "Review feedback addressed."
