@@ -1,0 +1,143 @@
+"""MCP management server for sandboxed project agents."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import os
+from pathlib import Path
+from typing import Any
+
+from fastmcp import FastMCP
+
+from agent_controller import AgentController
+from agent_sandbox import SandboxPolicy
+from llm import LLMClient
+
+mcp = FastMCP("tgit-agent-controller")
+
+_PROJECT_ROOT = Path.cwd().resolve()
+_STATE_ROOT = Path(
+    os.environ.get("TGIT_AGENT_STATE_DIR")
+    or Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "tgit-agent"
+).expanduser()
+_SNAPSHOT_ROOT = Path(
+    os.environ.get("TGIT_AGENT_SNAPSHOT_DIR") or _PROJECT_ROOT.parent / ".agent-snapshots"
+).expanduser()
+_LLM_CONFIG = os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.ini")
+_CONTROLLER: AgentController | None = None
+_LLM: LLMClient | None = None
+
+
+def _get_llm() -> LLMClient:
+    global _LLM
+    if _LLM is None:
+        _LLM = LLMClient(_LLM_CONFIG)
+    return _LLM
+
+
+async def _model_callback(params: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop"}
+    unknown = set(params) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
+    request = dict(params)
+    request["model"] = _get_llm().model
+    response = await asyncio.to_thread(_get_llm().client.chat.completions.create, **request)
+    if not hasattr(response, "model_dump"):
+        raise RuntimeError("OpenAI-compatible client returned an unsupported completion object")
+    return response.model_dump(mode="json")
+
+
+async def _submit_patch(snapshot: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Use the existing review MCP implementation to export snapshot commits."""
+    module = importlib.import_module("mcp_tgit_review")
+    export = getattr(module, "export_patch_series", None)
+    if not callable(export):
+        raise RuntimeError("mcp_tgit_review.export_patch_series is unavailable")
+    result = await asyncio.to_thread(
+        export,
+        base=snapshot.base_commit,
+        head=params["head_commit"],
+        repo_path=str(snapshot.project_root),
+    )
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise RuntimeError(f"Patch queue export failed: {result}")
+    return result
+
+
+def _controller() -> AgentController:
+    global _CONTROLLER
+    if _CONTROLLER is None:
+        _CONTROLLER = AgentController(
+            project_root=_PROJECT_ROOT,
+            state_root=_STATE_ROOT,
+            snapshot_root=_SNAPSHOT_ROOT,
+            model_callback=_model_callback,
+            patch_submit_callback=_submit_patch,
+            sandbox_policy=SandboxPolicy(),
+            max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "100")),
+            max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "3600")),
+        )
+    return _CONTROLLER
+
+
+@mcp.tool()
+async def start_agent(request: dict[str, Any]) -> dict[str, Any]:
+    """Start an isolated agent for the controller's current Git project.
+
+    Request schema: {"schema_version": 1, "task": "...", "history": [],
+    "limits": {"max_model_calls": 40, "max_runtime_seconds": 3600}}.
+    The project root is the directory from which this MCP server was launched.
+    """
+    return await _controller().start_agent(request)
+
+
+@mcp.tool()
+async def get_agent_status(agent_id: str) -> dict[str, Any]:
+    """Return persisted controller metadata for an agent."""
+    return await _controller().get_status(agent_id)
+
+
+@mcp.tool()
+async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
+    """Return the complete CopilotChat-format conversation message array."""
+    return await _controller().get_history(agent_id)
+
+
+@mcp.tool()
+async def continue_agent(agent_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append operator or review messages and resume a live waiting agent."""
+    return await _controller().continue_agent(agent_id, messages)
+
+
+@mcp.tool()
+async def stop_agent(agent_id: str) -> dict[str, Any]:
+    """Request worker shutdown and wait for its process to exit."""
+    return await _controller().stop_agent(agent_id)
+
+
+@mcp.tool()
+async def reap_agent(agent_id: str) -> dict[str, Any]:
+    """Remove a stopped agent's snapshot and controller state."""
+    return await _controller().reap_agent(agent_id)
+
+
+async def _run() -> None:
+    controller = _controller()
+    run_async = getattr(mcp, "run_async", None)
+    if not callable(run_async):
+        raise RuntimeError("FastMCP.run_async is required for this async server")
+    try:
+        await run_async()
+    finally:
+        await controller.shutdown()
+
+
+def main() -> int:
+    asyncio.run(_run())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
