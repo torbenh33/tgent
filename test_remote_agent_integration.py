@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -222,3 +224,145 @@ def test_adapter_upload_protocol_and_git_snapshot_end_to_end(tmp_path: Path, mon
     assert (snapshot_project / "local-change.txt").read_text(encoding="utf-8") == "transferred working tree\n"
     assert not (uploads.incoming / "adapter-upload").exists()
     assert not (uploads.completed / "adapter-upload").exists()
+
+
+def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypatch, request) -> None:
+    """Exercise service start/status/logs/stop/reap using only local resources."""
+    from datetime import datetime, timezone
+    from pathlib import PurePosixPath
+
+    from agent_sandbox import RuntimeManifest, SandboxRuntimeLayout, write_runtime_manifest
+    from remote_agent_config import RemoteAgentConfig
+    from remote_agent_service import RemoteAgentService
+
+    remote_base = Path(tempfile.mkdtemp(prefix="tgent-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(remote_base, ignore_errors=True))
+    config = RemoteAgentConfig("local-test", PurePosixPath(str(remote_base)))
+    version_root = Path(str(config.runtime_dir / "versions" / "runtime-1"))
+    version_root.mkdir(parents=True)
+    write_runtime_manifest(
+        version_root / "manifest.json",
+        RuntimeManifest(
+            version="runtime-1",
+            rsync_completed_at=datetime.now(timezone.utc),
+            layout=SandboxRuntimeLayout(()),
+        ),
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_bwrap = fake_bin / "bwrap"
+    fake_bwrap.write_text(
+        "#!/bin/sh\necho fake worker stderr >&2\nexec sleep 300\n",
+        encoding="utf-8",
+    )
+    fake_bwrap.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    project = _project(tmp_path / "source", "uploaded project\n")
+    service = RemoteAgentService(config)
+    startup_errors: list[Exception] = []
+    original_start_agent = service.controller.start_agent
+
+    async def record_start_error(*args, **kwargs):
+        try:
+            return await original_start_agent(*args, **kwargs)
+        except Exception as err:
+            startup_errors.append(err)
+            raise
+
+    service.controller.start_agent = record_start_error
+
+    async def exercise_lifecycle() -> None:
+        try:
+            prepared = await service._dispatch({
+                "schema_version": 1,
+                "operation": "prepare_upload",
+                "request_id": "prepare-lifecycle",
+                "upload_id": "lifecycle-upload",
+            })
+            assert prepared["ok"] is True
+            uploaded_checkout = service.uploads.incoming / "lifecycle-upload"
+            shutil.copytree(project, uploaded_checkout, dirs_exist_ok=True)
+            # The controller intentionally copies the source checkout's Git
+            # identity into its snapshot. Set it explicitly on the uploaded
+            # checkout so this test is independent of the caller's global Git
+            # configuration.
+            _git(uploaded_checkout, "config", "user.name", "Integration Test")
+            _git(uploaded_checkout, "config", "user.email", "integration@example.invalid")
+            finalized = await service._dispatch({
+                "schema_version": 1,
+                "operation": "finalize_upload",
+                "request_id": "finalize-lifecycle",
+                "upload_id": "lifecycle-upload",
+            })
+            assert finalized["ok"] is True
+
+            started = await service._dispatch({
+                "schema_version": 1,
+                "operation": "start",
+                "request_id": "start-lifecycle",
+                "upload_id": "lifecycle-upload",
+                "request": {"schema_version": 1, "task": "run lifecycle test"},
+            })
+            assert started["ok"] is True, (started, startup_errors)
+            agent_id = started["result"]["agent_id"]
+
+            # A later runtime publication must not change the service's selected
+            # runtime or the version recorded for this agent.
+            newer_root = Path(str(config.runtime_dir / "versions" / "runtime-2"))
+            newer_root.mkdir(parents=True)
+            write_runtime_manifest(
+                newer_root / "manifest.json",
+                RuntimeManifest(
+                    version="runtime-2",
+                    rsync_completed_at=datetime.now(timezone.utc),
+                    layout=SandboxRuntimeLayout(()),
+                ),
+            )
+            status = await service._dispatch({
+                "schema_version": 1,
+                "operation": "status",
+                "request_id": "status-lifecycle",
+                "agent_id": agent_id,
+            })
+            assert status["ok"] is True
+            assert status["result"]["runtime_version"] == "runtime-1"
+
+            log_path = Path(service.controller.store.get_metadata(agent_id)["worker_log"])
+            for _ in range(100):
+                if log_path.exists() and log_path.stat().st_size:
+                    break
+                await asyncio.sleep(0.01)
+
+            logs = await service._dispatch({
+                "schema_version": 1,
+                "operation": "logs",
+                "request_id": "logs-lifecycle",
+                "agent_id": agent_id,
+                "max_bytes": 1024,
+            })
+            assert logs["ok"] is True
+            assert "fake worker stderr" in logs["result"]["log"]
+
+            stopped = await service._dispatch({
+                "schema_version": 1,
+                "operation": "stop",
+                "request_id": "stop-lifecycle",
+                "agent_id": agent_id,
+            })
+            assert stopped["ok"] is True
+            assert stopped["result"]["state"] == "stopped"
+
+            reaped = await service._dispatch({
+                "schema_version": 1,
+                "operation": "reap",
+                "request_id": "reap-lifecycle",
+                "agent_id": agent_id,
+            })
+            assert reaped["ok"] is True
+            assert reaped["result"]["state"] == "reaped"
+        finally:
+            await service.controller.shutdown()
+
+    asyncio.run(exercise_lifecycle())
