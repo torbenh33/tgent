@@ -1,0 +1,15 @@
+[Unit]
+Description=TGent remote agent controller
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+Environment=TGIT_AGENT_LLM_CONFIG=%h/.config/tgent/config.ini
+ExecStart=@PYTHON@
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target
