@@ -22,7 +22,13 @@ from typing import Any, Awaitable, Callable
 
 from agent_ipc import AgentControlServer, AgentIPCError
 from agent_project import ProjectConfig, discover_project_root, load_project_config
-from agent_sandbox import SandboxCommand, SandboxPolicy, build_sandbox_command
+from agent_sandbox import (
+    SandboxCommand,
+    SandboxPolicy,
+    SandboxRuntimeLayout,
+    build_runtime_layout,
+    build_sandbox_command,
+)
 from agent_snapshot import ProjectSnapshot, SnapshotError, create_project_snapshot, remove_project_snapshot
 from agent_store import AgentStore, AgentStoreError, validate_agent_id
 
@@ -114,6 +120,7 @@ class AgentController:
         patch_submit_callback: PatchSubmitCallback | None = None,
         sandbox_policy: SandboxPolicy = SandboxPolicy(),
         worker_command: tuple[str, ...] | None = None,
+        runtime_layout: SandboxRuntimeLayout | None = None,
         bwrap: str = "bwrap",
         max_model_calls: int = 100,
         max_runtime_seconds: int = 3600,
@@ -144,6 +151,10 @@ class AgentController:
         self.patch_submit_callback = patch_submit_callback
         self.sandbox_policy = sandbox_policy
         self.worker_command = worker_command or (sys.executable, "-m", "agent_worker")
+        self.runtime_layout = runtime_layout or build_runtime_layout(
+            runtime_dirs=(Path(sys.prefix),),
+            runtime_files=(Path(__file__).with_name("agent_worker.py"), Path(__file__).with_name("agent_ipc.py")),
+        )
         self.bwrap = bwrap
         self.max_model_calls = max(1, int(max_model_calls))
         self.max_runtime_seconds = max(1, int(max_runtime_seconds))
@@ -249,8 +260,7 @@ class AgentController:
                     "AGENT_BASE_COMMIT": snapshot.base_commit,
                     "PYTHONPATH": "/opt/agent-runtime",
                 },
-                runtime_files=(Path(__file__).with_name("agent_worker.py"), Path(__file__).with_name("agent_ipc.py")),
-                runtime_dirs=(Path(sys.prefix),),
+                runtime_layout=self.runtime_layout,
             )
             log_path = self.log_root / f"{agent_id}.log"
             log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
