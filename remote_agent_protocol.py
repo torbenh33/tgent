@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Mapping
@@ -13,6 +14,7 @@ from remote_agent_config import RemoteAgentConfig
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
 MAX_RESPONSE_BYTES = 4_194_304
+# Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches"})
@@ -151,8 +153,12 @@ class RemoteAgentClient:
             raise RemoteProtocolError("Remote request exceeds the size limit")
 
         try:
+            remote_command = (
+                f"python3 -m remote_agent_service --base-dir "
+                f"{shlex.quote(str(self.config.remote_base_dir))} --stdio-v1"
+            )
             completed = subprocess.run(
-                ("ssh", self.config.ssh_host, REMOTE_COMMAND),
+                ("ssh", self.config.ssh_host, remote_command),
                 input=encoded + bytes((10,)),
                 capture_output=True,
                 timeout=self.timeout_seconds,

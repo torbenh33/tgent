@@ -108,7 +108,11 @@ def test_client_uses_fixed_ssh_command_and_checks_response(monkeypatch) -> None:
 
     assert result["result"] == {"status": "running"}
     argv, kwargs = calls[0]
-    assert argv == ("ssh", "beep", REMOTE_COMMAND)
+    assert argv == (
+        "ssh",
+        "beep",
+        "python3 -m remote_agent_service --base-dir /srv/tgent --stdio-v1",
+    )
     assert kwargs["input"].endswith(bytes((10,)))
     assert json.loads(kwargs["input"]) == _request()
     assert kwargs["check"] is False

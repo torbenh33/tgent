@@ -53,6 +53,22 @@ def test_dispatch_uses_registered_handler_and_returns_protocol_envelope() -> Non
     }
 
 
+def test_main_uses_command_line_base_dir_for_stdio_proxy(monkeypatch) -> None:
+    import remote_agent_service
+
+    called = []
+    monkeypatch.setattr(
+        remote_agent_service,
+        "proxy_stdio",
+        lambda socket_path: called.append(socket_path) or 0,
+    )
+
+    result = remote_agent_service.main(["--stdio-v1", "--base-dir", "/srv/tgent"])
+
+    assert result == 0
+    assert called == [Path("/srv/tgent/state/remote-agent.sock")]
+
+
 def test_dispatch_does_not_expose_unregistered_operations() -> None:
     service = RemoteAgentService.__new__(RemoteAgentService)
     service.handlers = {}

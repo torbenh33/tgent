@@ -13,7 +13,7 @@ import socket
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 from agent_controller import AgentController
@@ -317,9 +317,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--serve", action="store_true", help="run the persistent service")
     group.add_argument("--stdio-v1", action="store_true", help="proxy one SSH request")
-    parser.add_argument("--config", type=Path, help="deployment TOML path")
+    config_group = parser.add_mutually_exclusive_group()
+    config_group.add_argument("--config", type=Path, help="deployment TOML path")
+    config_group.add_argument(
+        "--base-dir",
+        help="managed service directory (for rendered service units and fixed SSH proxy calls)",
+    )
     arguments = parser.parse_args(argv)
-    config = load_remote_agent_config(arguments.config)
+    config = (
+        RemoteAgentConfig("localhost", PurePosixPath(arguments.base_dir))
+        if arguments.base_dir is not None
+        else load_remote_agent_config(arguments.config)
+    )
     if arguments.stdio_v1:
         return proxy_stdio(Path(str(config.state_dir)) / "remote-agent.sock")
     try:
