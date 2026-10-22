@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from typing import TextIO
 
+from remote_agent_upload import RemoteUploadManager
 from remote_agent_protocol import (
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
@@ -14,6 +15,31 @@ from remote_agent_protocol import (
     dispatch_request,
     error_response,
 )
+
+def build_operation_handlers(
+    uploads: RemoteUploadManager,
+    *,
+    start_agent,
+    lifecycle_handlers: Mapping[str, object],
+) -> dict[str, object]:
+    """Combine upload operations with explicitly provided controller handlers.
+
+    ``start_agent`` receives a completed uploaded checkout and validated start
+    payload. Other operation names must be explicitly supplied by the trusted
+    controller adapter; no unknown operation is exposed.
+    """
+    handlers: dict[str, object] = {
+        "prepare_upload": uploads.prepare_upload_handler(),
+        "finalize_upload": uploads.finalize_upload_handler(),
+        "start": uploads.start_handler(start_agent),
+    }
+    for operation, handler in lifecycle_handlers.items():
+        if operation not in {"status", "history", "continue", "stop", "logs", "reap"}:
+            raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
+        if not callable(handler):
+            raise TypeError(f"Lifecycle handler for {operation} must be callable")
+        handlers[operation] = handler
+    return handlers
 
 
 def serve_stdio(

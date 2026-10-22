@@ -15,7 +15,7 @@ MAX_REQUEST_BYTES = 1_048_576
 MAX_RESPONSE_BYTES = 4_194_304
 REMOTE_COMMAND = "tgent-agent-remote --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"start", "status", "history", "continue", "stop", "logs", "reap"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap"})
 
 
 class RemoteProtocolError(ValueError):
@@ -49,6 +49,8 @@ def validate_request(value: object) -> dict[str, object]:
 
     common = {"schema_version", "operation", "request_id"}
     expected: dict[str, set[str]] = {
+        "prepare_upload": common | {"upload_id"},
+        "finalize_upload": common | {"upload_id"},
         "start": common | {"upload_id", "request"},
         "status": common | {"agent_id"},
         "history": common | {"agent_id", "limit"},
@@ -62,9 +64,9 @@ def validate_request(value: object) -> dict[str, object]:
     if value.get("schema_version") != SCHEMA_VERSION:
         raise RemoteProtocolError("Unsupported remote protocol schema version")
     _validate_id(value.get("request_id"), "request_id")
-    if operation == "start":
+    if operation in {"prepare_upload", "finalize_upload", "start"}:
         _validate_id(value.get("upload_id"), "upload_id")
-        if not isinstance(value.get("request"), dict):
+        if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
     elif operation == "reap":
         _bounded_int(value.get("older_than_seconds"), "older_than_seconds", 60, 31_536_000)

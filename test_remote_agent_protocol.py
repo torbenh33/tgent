@@ -36,6 +36,18 @@ def test_validates_allowlisted_operations_and_rejects_extra_fields() -> None:
         validate_request(_request(command="id"))
 
 
+def test_validates_prepare_upload_operation() -> None:
+    request = {
+        "schema_version": 1,
+        "operation": "prepare_upload",
+        "request_id": "req-1",
+        "upload_id": "upload-1",
+    }
+    assert validate_request(request) == request
+    with pytest.raises(RemoteProtocolError, match="Invalid fields"):
+        validate_request({**request, "remote_path": "/tmp/upload"})
+
+
 def test_validates_identifiers_and_bounded_operation_fields() -> None:
     with pytest.raises(RemoteProtocolError, match="request_id"):
         validate_request(_request(request_id="../bad"))
