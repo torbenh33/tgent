@@ -54,7 +54,7 @@ def validate_request(value: object) -> dict[str, object]:
         "start": common | {"upload_id", "request"},
         "status": common | {"agent_id"},
         "history": common | {"agent_id", "limit"},
-        "continue": common | {"agent_id", "feedback"},
+        "continue": common | {"agent_id", "messages"},
         "stop": common | {"agent_id"},
         "logs": common | {"agent_id", "max_bytes"},
         "reap": common | {"agent_id"},
@@ -75,9 +75,15 @@ def validate_request(value: object) -> dict[str, object]:
         elif operation == "logs":
             _bounded_int(value.get("max_bytes"), "max_bytes", 1, 1_048_576)
         elif operation == "continue":
-            feedback = value.get("feedback")
-            if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 100_000:
-                raise RemoteProtocolError("continue feedback must be a non-empty bounded string")
+            messages = value.get("messages")
+            if (
+                not isinstance(messages, list)
+                or not messages
+                or len(messages) > 1000
+                or any(not isinstance(message, dict) for message in messages)
+                or len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > 100_000
+            ):
+                raise RemoteProtocolError("continue messages must be a non-empty bounded array of objects")
     return value
 
 

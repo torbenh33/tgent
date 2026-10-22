@@ -54,6 +54,32 @@ def test_start_prepares_upload_rsyncs_and_requests_start(tmp_path, monkeypatch) 
     )
 
 
+def test_lifecycle_methods_forward_operations_and_return_results() -> None:
+    client = _FakeClient(
+        [
+            {"ok": True, "result": {"state": "running"}},
+            {"ok": True, "result": {"messages": []}},
+            {"ok": True, "result": {"state": "review_received"}},
+            {"ok": True, "result": {"state": "stopped"}},
+            {"ok": True, "result": {"log": "worker output"}},
+            {"ok": True, "result": {"state": "reaped"}},
+        ]
+    )
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    assert adapter.status("agent-1") == {"state": "running"}
+    assert adapter.history("agent-1") == {"messages": []}
+    assert adapter.continue_agent("agent-1", [{"role": "user", "content": "continue"}]) == {
+        "state": "review_received"
+    }
+    assert adapter.stop("agent-1") == {"state": "stopped"}
+    assert adapter.logs("agent-1") == {"log": "worker output"}
+    assert adapter.reap("agent-1") == {"state": "reaped"}
+    assert [message["operation"] for message in client.messages] == [
+        "status", "history", "continue", "stop", "logs", "reap"
+    ]
+
+
 def test_start_stops_if_upload_preparation_is_rejected(tmp_path, monkeypatch) -> None:
     project = tmp_path / "project"
     project.mkdir()

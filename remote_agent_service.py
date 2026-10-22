@@ -148,8 +148,8 @@ class RemoteAgentService:
         return {"agent_id": request["agent_id"], "messages": history[-request["limit"]:]}
 
     async def _continue(self, request):
-        message = {"role": "user", "content": request["feedback"], "id": secrets.token_hex(16)}
-        return await self.controller.continue_agent(request["agent_id"], [message])
+        messages = [dict(message) for message in request["messages"]]
+        return await self.controller.continue_agent(request["agent_id"], messages)
 
     async def _stop(self, request):
         return await self.controller.stop_agent(request["agent_id"])

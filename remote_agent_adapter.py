@@ -93,3 +93,47 @@ class RemoteAgentAdapter:
             return result
         except RemoteProtocolError as err:
             raise RemoteAgentAdapterError(f"Remote start request failed: {err}") from err
+
+    def status(self, agent_id: str) -> dict[str, object]:
+        """Retrieve persisted remote agent status."""
+        return self._request("status", agent_id=agent_id)
+
+    def history(self, agent_id: str, *, limit: int = 10_000) -> dict[str, object]:
+        """Retrieve the most recent bounded remote conversation messages."""
+        return self._request("history", agent_id=agent_id, limit=limit)
+
+    def continue_agent(self, agent_id: str, messages: list[dict[str, object]]) -> dict[str, object]:
+        """Append operator or review messages and resume a live remote agent."""
+        return self._request("continue", agent_id=agent_id, messages=messages)
+
+    def stop(self, agent_id: str) -> dict[str, object]:
+        """Stop a remote agent and wait for its worker to exit."""
+        return self._request("stop", agent_id=agent_id)
+
+    def logs(self, agent_id: str, *, max_bytes: int = 65_536) -> dict[str, object]:
+        """Retrieve a bounded tail of the remote worker stderr log."""
+        return self._request("logs", agent_id=agent_id, max_bytes=max_bytes)
+
+    def reap(self, agent_id: str) -> dict[str, object]:
+        """Remove a stopped remote agent's snapshot and controller state."""
+        return self._request("reap", agent_id=agent_id)
+
+    def _request(self, operation: str, **fields: object) -> dict[str, object]:
+        message = {
+            "schema_version": 1,
+            "operation": operation,
+            "request_id": uuid.uuid4().hex,
+            **fields,
+        }
+        try:
+            response = self.client.request(message)
+        except RemoteProtocolError as err:
+            raise RemoteAgentAdapterError(f"Remote {operation} request failed: {err}") from err
+        if not response["ok"]:
+            error = response.get("error")
+            detail = error.get("message", "Remote operation failed") if isinstance(error, dict) else "Remote operation failed"
+            raise RemoteAgentAdapterError(str(detail))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RemoteAgentAdapterError(f"Remote {operation} returned a non-object result")
+        return result
