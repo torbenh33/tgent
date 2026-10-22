@@ -8,10 +8,13 @@ actually permitted.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from agent_project import ProjectConfig
@@ -54,6 +57,110 @@ class SandboxRuntimeLayout:
 
     mounts: tuple[RuntimeMount, ...]
     symlinks: tuple[tuple[Path, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class RuntimeManifest:
+    """Versioned runtime layout and the completion time of its rsync."""
+
+    version: str
+    rsync_completed_at: datetime
+    layout: SandboxRuntimeLayout
+
+    def __post_init__(self) -> None:
+        if (
+            not self.version
+            or self.version in {".", ".."}
+            or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in self.version)
+        ):
+            raise SandboxError(f"Invalid runtime version: {self.version!r}")
+        if self.rsync_completed_at.tzinfo is None:
+            raise SandboxError("Runtime rsync completion time must include a timezone")
+
+    def to_dict(self) -> dict[str, object]:
+        completed_at = self.rsync_completed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return {
+            "schema_version": 1,
+            "version": self.version,
+            "rsync_completed_at": completed_at,
+            "mounts": [
+                {"source": str(mount.source), "target": str(mount.target)}
+                for mount in self.layout.mounts
+            ],
+            "symlinks": [
+                {"target": str(target), "link_target": link_target}
+                for target, link_target in self.layout.symlinks
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> RuntimeManifest:
+        if not isinstance(data, dict) or set(data) != {
+            "schema_version", "version", "rsync_completed_at", "mounts", "symlinks"
+        }:
+            raise SandboxError("Invalid runtime manifest fields")
+        if data["schema_version"] != 1:
+            raise SandboxError("Unsupported runtime manifest schema version")
+        if not isinstance(data["version"], str) or not isinstance(data["rsync_completed_at"], str):
+            raise SandboxError("Invalid runtime manifest version or timestamp")
+        try:
+            completed_at = datetime.fromisoformat(data["rsync_completed_at"].replace("Z", "+00:00"))
+        except ValueError as err:
+            raise SandboxError("Invalid runtime manifest timestamp") from err
+        raw_mounts = data["mounts"]
+        raw_symlinks = data["symlinks"]
+        if not isinstance(raw_mounts, list) or not isinstance(raw_symlinks, list):
+            raise SandboxError("Invalid runtime manifest mount lists")
+        mounts: list[RuntimeMount] = []
+        for entry in raw_mounts:
+            if not isinstance(entry, dict) or set(entry) != {"source", "target"}:
+                raise SandboxError("Invalid runtime manifest mount")
+            if not isinstance(entry["source"], str) or not isinstance(entry["target"], str):
+                raise SandboxError("Invalid runtime manifest mount paths")
+            mounts.append(RuntimeMount(Path(entry["source"]), Path(entry["target"])))
+        symlinks: list[tuple[Path, str]] = []
+        for entry in raw_symlinks:
+            if not isinstance(entry, dict) or set(entry) != {"target", "link_target"}:
+                raise SandboxError("Invalid runtime manifest symlink")
+            if not isinstance(entry["target"], str) or not isinstance(entry["link_target"], str):
+                raise SandboxError("Invalid runtime manifest symlink paths")
+            symlinks.append((Path(entry["target"]), entry["link_target"]))
+        return cls(
+            version=data["version"],
+            rsync_completed_at=completed_at,
+            layout=SandboxRuntimeLayout(tuple(mounts), tuple(symlinks)),
+        )
+
+
+def write_runtime_manifest(path: str | os.PathLike[str], manifest: RuntimeManifest) -> None:
+    """Atomically write a manifest after the version's rsync has completed."""
+    destination = Path(path)
+    if not destination.parent.is_dir():
+        raise SandboxError(f"Runtime manifest directory does not exist: {destination.parent}")
+    encoded = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n"
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def read_runtime_manifest(path: str | os.PathLike[str]) -> RuntimeManifest:
+    """Load and validate a prepared runtime manifest."""
+    try:
+        with Path(path).open(encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, json.JSONDecodeError) as err:
+        raise SandboxError(f"Cannot read runtime manifest {path}: {err}") from err
+    return RuntimeManifest.from_dict(data)
 
 
 _SYSTEM_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin")

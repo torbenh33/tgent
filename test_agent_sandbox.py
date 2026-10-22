@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import os
 import socket
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from agent_project import ProjectConfig
 from agent_sandbox import (
+    RuntimeManifest,
     RuntimeMount,
     SandboxError,
+    read_runtime_manifest,
+    write_runtime_manifest,
     SandboxPolicy,
     SandboxRuntimeLayout,
     build_sandbox_command,
@@ -101,6 +105,42 @@ def test_runtime_layout_binds_mirror_source_to_sandbox_target(tmp_path: Path) ->
     source_index = result.argv.index(str(mirror))
     assert result.argv[source_index - 1] == "--ro-bind"
     assert result.argv[source_index + 1] == str(target)
+
+
+def test_runtime_manifest_round_trips_layout_and_rsync_time(tmp_path: Path) -> None:
+    completed_at = datetime(2026, 10, 22, 10, 14, 16, tzinfo=timezone.utc)
+    manifest = RuntimeManifest(
+        version="runtime-1",
+        rsync_completed_at=completed_at,
+        layout=SandboxRuntimeLayout(
+            mounts=(RuntimeMount(tmp_path / "mirror" / "usr", Path("/usr")),),
+            symlinks=((Path("/bin"), "usr/bin"),),
+        ),
+    )
+    manifest_path = tmp_path / "runtime" / "manifest.json"
+    manifest_path.parent.mkdir()
+
+    write_runtime_manifest(manifest_path, manifest)
+
+    loaded = read_runtime_manifest(manifest_path)
+    assert loaded == manifest
+    assert loaded.rsync_completed_at == completed_at
+
+
+def test_runtime_manifest_rejects_invalid_version_and_naive_timestamp() -> None:
+    with pytest.raises(SandboxError, match="Invalid runtime version"):
+        RuntimeManifest(
+            version="../runtime",
+            rsync_completed_at=datetime.now(timezone.utc),
+            layout=SandboxRuntimeLayout(()),
+        )
+
+    with pytest.raises(SandboxError, match="must include a timezone"):
+        RuntimeManifest(
+            version="runtime-1",
+            rsync_completed_at=datetime(2026, 10, 22),
+            layout=SandboxRuntimeLayout(()),
+        )
 
 
 def test_rejects_project_home_mount_not_authorized_by_controller(tmp_path: Path) -> None:
