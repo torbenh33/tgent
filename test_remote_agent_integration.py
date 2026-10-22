@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -366,3 +367,96 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             await service.controller.shutdown()
 
     asyncio.run(exercise_lifecycle())
+
+
+def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, request) -> None:
+    """Export a commit patch through the service and retrieve it through the adapter."""
+    from datetime import datetime, timezone
+    from pathlib import PurePosixPath
+
+    from agent_sandbox import RuntimeManifest, SandboxRuntimeLayout, write_runtime_manifest
+    from remote_agent_config import RemoteAgentConfig
+    from remote_agent_service import RemoteAgentService
+
+    remote_base = Path(tempfile.mkdtemp(prefix="tgent-patch-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(remote_base, ignore_errors=True))
+    config = RemoteAgentConfig("beep", PurePosixPath(str(remote_base)))
+    version_root = Path(str(config.runtime_dir / "versions" / "runtime-1"))
+    version_root.mkdir(parents=True)
+    write_runtime_manifest(
+        version_root / "manifest.json",
+        RuntimeManifest(
+            version="runtime-1",
+            rsync_completed_at=datetime.now(timezone.utc),
+            layout=SandboxRuntimeLayout(()),
+        ),
+    )
+    service = RemoteAgentService(config)
+
+    project = _project(tmp_path / "patch-project", "before patch\n")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "uploaded project state")
+    base_commit = subprocess.run(
+        ("git", "-C", str(project), "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    snapshot = _snapshot_or_skip(project, tmp_path / "patch-snapshot")
+    (snapshot.project_root / "tracked.txt").write_text("after patch\n", encoding="utf-8")
+    _git(snapshot.project_root, "add", "tracked.txt")
+    _git(snapshot.project_root, "commit", "-m", "change tracked content")
+    head_commit = subprocess.run(
+        ("git", "-C", str(snapshot.project_root), "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    agent_id = snapshot.root.name
+    exported: list[tuple[object, ...]] = []
+
+    def export_patch_series(*, base, head, repo_path):
+        exported.append((base, head, repo_path))
+        return {"status": "ok", "commits": [head]}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "mcp_tgit_review",
+        SimpleNamespace(export_patch_series=export_patch_series),
+    )
+    result = asyncio.run(
+        service._submit_patch(snapshot, {"base_commit": base_commit, "head_commit": head_commit})
+    )
+    assert exported == [(base_commit, head_commit, str(snapshot.project_root))]
+    assert result["patch_artifact"] == f"{agent_id}.patch"
+    assert result["patch_bytes"] > 0
+    service.controller.store.create(
+        agent_id,
+        {"agent_id": agent_id, "state": "awaiting_review", "submitted_head": head_commit},
+        [],
+    )
+
+    class ServiceProtocolClient:
+        def request(self, message: dict[str, object]) -> dict[str, object]:
+            metadata = asyncio.run(service._patches({"agent_id": message["agent_id"]}))
+            return {"ok": True, "result": metadata}
+
+    def local_rsync(argv, *, check):
+        assert check is True
+        source = Path(argv[-2].removeprefix("beep:"))
+        Path(argv[-1]).write_bytes(source.read_bytes())
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(adapter_module.subprocess, "run", local_rsync)
+    destination = tmp_path / "retrieved-patches"
+    destination.mkdir()
+    adapter = RemoteAgentAdapter(config, client=ServiceProtocolClient())
+
+    retrieved = adapter.retrieve_patch(agent_id, destination)
+
+    assert retrieved == destination / f"{agent_id}.patch"
+    patch_content = retrieved.read_text(encoding="utf-8")
+    assert "change tracked content" in patch_content
+    assert "before patch" in patch_content
+    assert "after patch" in patch_content
+    assert result["patch_bytes"] == retrieved.stat().st_size
