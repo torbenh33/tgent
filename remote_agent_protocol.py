@@ -109,12 +109,13 @@ def dispatch_request(
 def error_response(request_id: str | None, error: Exception) -> dict[str, object]:
     """Build a bounded error envelope without exposing exception details."""
     safe_request_id = request_id if isinstance(request_id, str) and _is_valid_id(request_id) else None
+    message = str(error)[:500] if isinstance(error, RemoteProtocolError) else "Remote operation failed"
     return {
         "schema_version": SCHEMA_VERSION,
         "request_id": safe_request_id,
         "ok": False,
         "result": None,
-        "error": {"code": "request_failed", "message": str(error)[:500]},
+        "error": {"code": "request_failed", "message": message},
     }
 
 
