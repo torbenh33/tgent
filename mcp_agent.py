@@ -163,6 +163,22 @@ async def reap_agent(agent_id: str) -> dict[str, Any]:
     return await _controller().reap_agent(agent_id)
 
 
+@mcp.tool()
+async def retrieve_agent_patch(agent_id: str, destination: str) -> dict[str, Any]:
+    """Download a submitted remote patch artifact for local review.
+
+    Returns the local artifact path, or ``available: false`` if the agent has
+    not submitted a patch yet. Patch retrieval is available in remote mode.
+    """
+    remote = _remote_adapter()
+    if remote is None:
+        return {"agent_id": agent_id, "available": False, "message": "Patch retrieval requires remote mode."}
+    path = await asyncio.to_thread(remote.retrieve_patch, agent_id, destination)
+    if path is None:
+        return {"agent_id": agent_id, "available": False}
+    return {"agent_id": agent_id, "available": True, "path": str(path)}
+
+
 async def _run() -> None:
     controller = None if _remote_adapter() is not None else _controller()
     run_async = getattr(mcp, "run_async", None)

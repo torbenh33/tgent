@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -117,6 +118,50 @@ class RemoteAgentAdapter:
     def reap(self, agent_id: str) -> dict[str, object]:
         """Remove a stopped remote agent's snapshot and controller state."""
         return self._request("reap", agent_id=agent_id)
+
+    def patches(self, agent_id: str) -> dict[str, object]:
+        """Return metadata for the remote patch artifact, if one is available."""
+        return self._request("patches", agent_id=agent_id)
+
+    def retrieve_patch(self, agent_id: str, destination: str | os.PathLike[str]) -> Path | None:
+        """Download an available patch artifact into a local directory."""
+        result = self.patches(agent_id)
+        if result.get("available") is not True:
+            return None
+        directory = Path(destination).expanduser().resolve()
+        if not directory.is_dir():
+            raise RemoteAgentAdapterError(f"Patch destination is not a directory: {directory}")
+        artifact_name = f"{agent_id}.patch"
+        if result.get("artifact") != artifact_name:
+            raise RemoteAgentAdapterError("Remote service returned an invalid patch artifact name")
+        size = result.get("bytes")
+        if type(size) is not int or not 0 <= size <= 16 * 1024 * 1024:
+            raise RemoteAgentAdapterError("Remote service returned an invalid patch artifact size")
+
+        remote_path = str(self.config.patches_dir / artifact_name)
+        target = directory / artifact_name
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{artifact_name}.", dir=directory)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            subprocess.run(
+                (
+                    self.rsync,
+                    "-a",
+                    "--",
+                    f"{self.config.ssh_host}:{shlex.quote(remote_path)}",
+                    os.fspath(temporary),
+                ),
+                check=True,
+            )
+            if temporary.is_symlink() or not temporary.is_file() or temporary.stat().st_size != size:
+                raise RemoteAgentAdapterError("Retrieved patch artifact does not match its metadata")
+            os.replace(temporary, target)
+        except (OSError, subprocess.CalledProcessError) as err:
+            raise RemoteAgentAdapterError(f"Patch retrieval failed: {err}") from err
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
 
     def _request(self, operation: str, **fields: object) -> dict[str, object]:
         message = {

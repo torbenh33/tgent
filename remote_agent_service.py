@@ -11,6 +11,7 @@ import os
 import secrets
 import socket
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -103,6 +104,7 @@ class RemoteAgentService:
                 "stop": self._stop,
                 "logs": self._logs,
                 "reap": self._reap,
+                "patches": self._patches,
             },
         )
         self.socket_path = Path(str(config.state_dir)) / "remote-agent.sock"
@@ -134,8 +136,34 @@ class RemoteAgentService:
             repo_path=str(snapshot.project_root),
         )
         if not isinstance(result, dict) or result.get("status") != "ok":
-            raise RuntimeError("Patch queue export failed")
-        return result
+            raise RuntimeError(f"Patch queue export failed: {result}")
+
+        patch = await asyncio.to_thread(
+            subprocess.run,
+            (
+                "git", "-C", str(snapshot.project_root), "format-patch",
+                "--binary", "--stdout", f"{snapshot.base_commit}..{params['head_commit']}",
+            ),
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if len(patch.stdout) > 16 * 1024 * 1024:
+            raise RuntimeError("Patch artifact exceeds 16 MiB limit")
+        artifact_name = f"{snapshot.root.name}.patch"
+        artifact_path = Path(str(self.config.patches_dir)) / artifact_name
+        temporary_path = artifact_path.with_suffix(".patch.tmp")
+        descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(patch.stdout)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, artifact_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch.stdout)}
 
     async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
         return await self.controller.start_agent(request, source_root=checkout)
@@ -159,6 +187,21 @@ class RemoteAgentService:
 
     async def _reap(self, request):
         return await self.controller.reap_agent(request["agent_id"])
+
+    async def _patches(self, request):
+        agent_id = request["agent_id"]
+        metadata = self.controller.store.get_metadata(agent_id)
+        artifact_name = f"{agent_id}.patch"
+        artifact_path = Path(str(self.config.patches_dir)) / artifact_name
+        if artifact_path.is_symlink() or not artifact_path.is_file():
+            return {"agent_id": agent_id, "available": False}
+        return {
+            "agent_id": agent_id,
+            "available": True,
+            "artifact": artifact_name,
+            "bytes": artifact_path.stat().st_size,
+            "submitted_head": metadata.get("submitted_head"),
+        }
 
     async def _dispatch(self, message: object) -> dict[str, object]:
         request_id = message.get("request_id") if isinstance(message, dict) else None

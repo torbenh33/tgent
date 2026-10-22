@@ -80,6 +80,77 @@ def test_lifecycle_methods_forward_operations_and_return_results() -> None:
     ]
 
 
+def test_retrieve_patch_downloads_verified_artifact_atomically(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "patches"
+    destination.mkdir()
+    client = _FakeClient([{
+        "ok": True,
+        "result": {
+            "agent_id": "agent-1",
+            "available": True,
+            "artifact": "agent-1.patch",
+            "bytes": len(b"patch contents"),
+        },
+    }])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        Path(argv[-1]).write_bytes(b"patch contents")
+
+    monkeypatch.setattr(adapter_module.subprocess, "run", fake_run)
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    retrieved = adapter.retrieve_patch("agent-1", destination)
+
+    assert retrieved == destination / "agent-1.patch"
+    assert retrieved.read_bytes() == b"patch contents"
+    assert calls[0][0][-2] == "beep:/srv/tgent/patches/agent-1.patch"
+    assert calls[0][0][-1] != str(retrieved)
+    assert not list(destination.glob(".agent-1.patch.*"))
+
+
+def test_retrieve_patch_returns_none_when_artifact_is_unavailable(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "patches"
+    destination.mkdir()
+    client = _FakeClient([{"ok": True, "result": {"available": False}}])
+    monkeypatch.setattr(
+        adapter_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("unexpected rsync"),
+    )
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    assert adapter.retrieve_patch("agent-1", destination) is None
+
+
+def test_retrieve_patch_rejects_artifact_size_mismatch_without_replacing_target(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "patches"
+    destination.mkdir()
+    target = destination / "agent-1.patch"
+    target.write_text("previous", encoding="utf-8")
+    client = _FakeClient([{
+        "ok": True,
+        "result": {
+            "available": True,
+            "artifact": "agent-1.patch",
+            "bytes": 100,
+        },
+    }])
+
+    def fake_run(argv, **kwargs):
+        Path(argv[-1]).write_bytes(b"short")
+
+    monkeypatch.setattr(adapter_module.subprocess, "run", fake_run)
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    with pytest.raises(RemoteAgentAdapterError, match="does not match"):
+        adapter.retrieve_patch("agent-1", destination)
+
+    assert target.read_text(encoding="utf-8") == "previous"
+    assert not list(destination.glob(".agent-1.patch.*"))
+
+
 def test_start_stops_if_upload_preparation_is_rejected(tmp_path, monkeypatch) -> None:
     project = tmp_path / "project"
     project.mkdir()
