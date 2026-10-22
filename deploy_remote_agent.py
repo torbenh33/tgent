@@ -2,8 +2,9 @@
 
 The deployment configuration is read locally from
 ``~/.config/tgent/remote-agent.toml``. The remote Python environment must
-already exist at ``<remote_base_dir>/app/.venv``; this command preserves it
-while synchronizing the application source and enabling the user service.
+already exist at ``<remote_base_dir>/app/.venv``; this command preserves it.
+The command synchronizes the application, publishes a versioned sandbox
+runtime, renders and installs the user service unit, and enables the service.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+from agent_sandbox import SandboxError
+from prepare_remote_runtime import prepare_remote_runtime
 from remote_agent_config import RemoteAgentConfigError, load_remote_agent_config
 
 
@@ -100,6 +103,10 @@ def deploy_remote_agent(
     rsync_argv.extend(("--", os.fspath(project_root) + "/", f"{config.ssh_host}:{shlex.quote(str(app_dir))}/"))
     subprocess.run(tuple(rsync_argv), check=True)
 
+    # Publish the sandbox runtime only after the application sync succeeds and
+    # before enabling a service that selects the newest complete version.
+    prepare_remote_runtime(config, rsync=rsync)
+
     rendered = _render_unit(config)
     with tempfile.TemporaryDirectory(prefix="tgent-unit-") as temporary_dir:
         local_unit = Path(temporary_dir) / _UNIT_NAME
@@ -126,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         deploy_remote_agent(config_path=arguments.config, rsync=arguments.rsync)
-    except (RemoteAgentConfigError, OSError, RuntimeError, subprocess.CalledProcessError) as err:
+    except (RemoteAgentConfigError, SandboxError, OSError, RuntimeError, subprocess.CalledProcessError) as err:
         print(f"deploy remote agent: {err}", file=sys.stderr)
         return 1
     return 0

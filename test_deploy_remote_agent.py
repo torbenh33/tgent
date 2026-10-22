@@ -30,9 +30,19 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
         encoding="utf-8",
     )
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    events: list[str] = []
+
+    def fake_prepare(config, *, rsync):
+        assert str(config.remote_base_dir) == "/srv/tgent"
+        assert rsync == "rsync"
+        events.append("runtime")
 
     def fake_run(argv, **kwargs):
         calls.append((tuple(str(part) for part in argv), kwargs))
+        if argv[0] == "rsync" and "--delete" in argv:
+            events.append("app")
+        elif argv[0] == "rsync":
+            events.append("unit")
         if argv[0] == "rsync" and "--delete" not in argv:
             rendered_file = Path(argv[-2])
             assert rendered_file.read_text(encoding="utf-8").startswith("[Unit]")
@@ -40,6 +50,7 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(deployment.subprocess, "run", fake_run)
+    monkeypatch.setattr(deployment, "prepare_remote_runtime", fake_prepare)
 
     deployment.deploy_remote_agent(config_path=config_path)
 
@@ -50,6 +61,7 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
         "systemctl --user daemon-reload",
         "systemctl --user enable --now tgent-remote-agent.service",
     ]
+    assert events == ["app", "runtime", "unit"]
     app_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" in argv)
     assert app_sync[1:3] == ("-a", "--delete")
     assert ".venv/" in app_sync
