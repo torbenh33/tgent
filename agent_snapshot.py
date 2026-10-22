@@ -1,10 +1,10 @@
-"""Create and remove isolated reflink snapshots of Git checkouts.
+"""Create and remove snapshots of Git checkouts.
 
-Directory contents are copied with GNU ``cp --reflink=always``. The operation
-fails rather than silently making a full copy when reflinks are unavailable.
-Linked worktrees need special handling because their ``.git`` file points into
-shared Git metadata; the complete common Git directory is copied beside the
-snapshot and the copied worktree metadata is redirected to that copy.
+Directory contents are copied with GNU ``cp --reflink=auto``, which uses
+reflinks when supported and falls back to ordinary copies otherwise. Linked
+worktrees need special handling because their ``.git`` file points into shared
+Git metadata; the complete common Git directory is copied beside the snapshot
+and the copied worktree metadata is redirected to that copy.
 """
 
 from __future__ import annotations
@@ -67,11 +67,11 @@ def _base_commit(project_root: Path) -> str:
     return proc.stdout.strip()
 
 
-def _copy_reflink(source: Path, destination: Path) -> None:
-    """Copy a directory tree, requiring reflinks for all regular files."""
+def _copy_tree(source: Path, destination: Path) -> None:
+    """Copy a directory tree, using reflinks when supported."""
     try:
         proc = subprocess.run(
-            ["cp", "-a", "--reflink=always", "--", str(source), str(destination)],
+            ["cp", "-a", "--reflink=auto", "--", str(source), str(destination)],
             capture_output=True,
             text=True,
             check=False,
@@ -124,16 +124,16 @@ def create_project_snapshot(
     source_root: str | os.PathLike[str],
     snapshot_root: str | os.PathLike[str],
 ) -> ProjectSnapshot:
-    """Create an independent reflink snapshot beneath a new destination root.
+    """Create an independent snapshot beneath a new destination root.
 
     ``snapshot_root`` must not already exist. The checkout is placed at its
     ``project`` child, with copied linked-worktree common metadata at
     ``git-common`` when needed. Callers can bind ``project_root`` at the
     source checkout's original absolute path inside Bubblewrap.
 
-    The source must be a Git repository root. Reflink failure, unsupported Git
+    The source must be a Git repository root. Copy failure, unsupported Git
     layouts, or verification failure remove the partial destination and raise
-    ``SnapshotError``; there is deliberately no copy fallback.
+    ``SnapshotError``.
     """
     try:
         source = discover_project_root(source_root)
@@ -163,11 +163,11 @@ def create_project_snapshot(
     try:
         destination.mkdir(parents=True, mode=0o700)
         project_copy = destination / "project"
-        _copy_reflink(source, project_copy)
+        _copy_tree(source, project_copy)
 
         if linked:
             common_copy = destination / "git-common"
-            _copy_reflink(common_dir, common_copy)
+            _copy_tree(common_dir, common_copy)
             assert admin_relative is not None
             copied_admin = common_copy / admin_relative
             if not copied_admin.is_dir() or not (copied_admin / "gitdir").is_file():

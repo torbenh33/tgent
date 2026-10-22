@@ -258,3 +258,53 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
         for message in client.model_requests[1]["messages"]
     )
     assert client.history[-1]["content"] == "Review feedback addressed."
+
+
+def test_discovers_mcp_tools_and_resource_templates(tmp_path: Path) -> None:
+    module = tmp_path / "mcp_demo.py"
+    module.write_text(
+        """
+from types import SimpleNamespace
+
+class FakeMCP:
+    async def list_tools(self):
+        return [SimpleNamespace(name='echo', inputSchema={'type': 'object', 'properties': {'value': {'type': 'string'}}}, description='Echo input')]
+
+    async def call_tool(self, name, arguments):
+        return {'tool': name, 'arguments': arguments}
+
+    async def list_resources(self):
+        return []
+
+    async def list_resource_templates(self):
+        return [SimpleNamespace(name='item', uriTemplate='demo://items/{item_id}', description='Read item')]
+
+    async def read_resource(self, uri):
+        return [SimpleNamespace(mimeType='text/plain', text=uri)]
+
+mcp = FakeMCP()
+""",
+        encoding="utf-8",
+    )
+    worker = AgentWorker(client=None, root=tmp_path, agent_id="agent")  # type: ignore[arg-type]
+
+    async def exercise() -> None:
+        await worker._discover_mcp_tools()
+        assert "mcp_demo__echo" in worker.dynamic_tools
+        assert "mcp_demo__resource__item" in worker.dynamic_tools
+        model_tools = {item["function"]["name"] for item in worker.available_tools}
+        assert "mcp_demo__echo" in model_tools
+        assert "mcp_demo__resource__item" in model_tools
+        system_message = worker._api_messages([])[0]["content"]
+        assert "mcp_demo__echo" in system_message
+        assert "mcp_demo__resource__item" in system_message
+        tool_result = await worker._execute_tool("mcp_demo__echo", {"value": "hello"})
+        assert tool_result == {"tool": "echo", "arguments": {"value": "hello"}}
+        resource_result = await worker._execute_tool(
+            "mcp_demo__resource__item", {"item_id": "a/b"}
+        )
+        assert resource_result == [
+            {"mime_type": "text/plain", "text": "demo://items/a%2Fb", "blob": None}
+        ]
+
+    asyncio.run(exercise())

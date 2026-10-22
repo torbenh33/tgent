@@ -91,6 +91,7 @@ def build_sandbox_command(
     runtime_home: str | os.PathLike[str] | None = None,
     worker_env: dict[str, str] | None = None,
     runtime_files: tuple[str | os.PathLike[str], ...] = (),
+    runtime_dirs: tuple[str | os.PathLike[str], ...] = (),
 ) -> SandboxCommand:
     """Build a restrictive Bubblewrap argv for a worker in a project snapshot.
 
@@ -146,6 +147,25 @@ def build_sandbox_command(
         denied_path = sorted(denied, key=str)[0]
         raise SandboxError(f"Project requested a home mount not authorized by controller policy: {denied_path}")
 
+    runtime_mounts: list[Path] = []
+    for raw_runtime_dir in runtime_dirs:
+        source = Path(raw_runtime_dir).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise SandboxError(f"Trusted runtime directory is not a directory: {source}")
+        # A trusted venv inside the project may be overlaid read-only after
+        # the snapshot bind. Reject only runtime trees that would hide the
+        # project mount (or replace it entirely).
+        if source == project_target or _path_is_within(project_target, source):
+            raise SandboxError(f"Trusted runtime directory contains the project mount: {source}")
+        if source == Path(source.anchor):
+            raise SandboxError("Refusing to mount the filesystem root as a runtime directory")
+        # Standard system trees are already mounted read-only above.
+        if any(_path_is_within(source, Path(system_dir)) for system_dir in _SYSTEM_DIRS):
+            continue
+        if any(_path_is_within(source, existing) or _path_is_within(existing, source) for existing in runtime_mounts):
+            raise SandboxError(f"Overlapping trusted runtime directories: {source}")
+        runtime_mounts.append(source)
+
     mounts: list[tuple[Path, Path, bool]] = []
     for relative, read_only in [*((p, True) for p in requested_ro), *((p, False) for p in requested_rw)]:
         source = home_root / relative
@@ -163,6 +183,10 @@ def build_sandbox_command(
         for _source_b, target_b, _ro_b in mounts[index + 1 :]:
             if _path_is_within(target_a, target_b) or _path_is_within(target_b, target_a):
                 raise SandboxError(f"Overlapping home mount targets: {target_a} and {target_b}")
+    for runtime_dir in runtime_mounts:
+        for _source, target, _read_only in mounts:
+            if _path_is_within(runtime_dir, target) or _path_is_within(target, runtime_dir):
+                raise SandboxError(f"Trusted runtime directory overlaps an authorized home mount: {runtime_dir}")
 
     argv: list[str] = [
         bwrap_path,
@@ -197,6 +221,12 @@ def build_sandbox_command(
     # directories in the sandbox root. Project edits are the intended writes.
     _add_parent_dirs(argv, project_target, Path(project_target.anchor), created_dirs)
     argv.extend(("--bind", str(snapshot_project), str(project_target)))
+
+    # A virtual environment is mounted read-only at its original absolute path
+    # so the interpreter can find pyvenv.cfg, its standard library, and packages.
+    for runtime_dir in sorted(runtime_mounts, key=str):
+        _add_parent_dirs(argv, runtime_dir, Path(runtime_dir.anchor), created_dirs)
+        argv.extend(("--ro-bind", str(runtime_dir), str(runtime_dir)))
 
     for source, target, read_only in sorted(mounts, key=lambda entry: str(entry[1])):
         _add_parent_dirs(argv, target, home_target, created_dirs)

@@ -98,6 +98,9 @@ def test_model_api_messages_strip_copilotchat_metadata_but_history_is_untouched(
     messages = worker._api_messages(transcript)
 
     assert messages[0]["role"] == "system"
+    assert "Available tools:" in messages[0]["content"]
+    assert "read_file" in messages[0]["content"]
+    assert "submit_patch_queue" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "task"}
     assert messages[2]["tool_calls"] == transcript[1]["tool_calls"]
     assert transcript[0]["id"] == "message-id"

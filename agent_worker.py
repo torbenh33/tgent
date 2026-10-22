@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
+import re
 import secrets
 import signal
+import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from agent_ipc import AgentIPCError, AgentWorkerClient
 
@@ -111,12 +115,22 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 SYSTEM_PROMPT = """You are a coding agent working in an isolated Git snapshot of the project.
+Understand the user's request before acting. Use the provided tools directly:
+read_file and search_files inspect project files, edit_file changes them, and
+run_command executes an argv command (not shell text). Never try to execute the
+user's task description or a tool name as a command. For test requests, inspect
+project instructions or test configuration, then run the relevant test command.
+Avoid repeated broad searches; if a targeted inspection does not find the answer,
+report what you checked and what remains uncertain.
+
 Use tools to inspect and change files, run tests, and commit your work in the snapshot.
 Do not claim changes are applied to the main checkout. When a coherent committed
 patch is ready, call submit_patch_queue with its HEAD commit. After submission,
 wait for review feedback; address it as a new revision when received. You may
-finish a turn without tools; that halts the agent for inspection. Keep tool use
-focused and avoid dumping entire large files into the conversation."""
+finish a turn without tools; that halts the agent for inspection. If asked to
+list your tools without using them, report the exact names from the Available tools
+section in the system message; do not call tools to discover their names, then finish
+the turn. Keep tool use focused and avoid dumping entire large files into the conversation."""
 
 
 class WorkerError(RuntimeError):
@@ -314,8 +328,128 @@ class AgentWorker:
         self.agent_id = agent_id
         self.history: list[dict[str, Any]] = []
         self.model: str | None = None
+        self.dynamic_tools: dict[str, tuple[Any, str, str, str | None, tuple[str, ...]]] = {}
+        self.available_tools = list(TOOLS)
+
+    async def _discover_mcp_tools(self) -> None:
+        """Import project MCP modules and expose their FastMCP tools/resources.
+
+        Modules are imported only from this checkout's top level. Their server
+        functions execute in the worker sandbox, not through controller RPC.
+        """
+        for path in sorted(self.root.glob("mcp_*.py")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            module_name = f"_agent_discovered_{path.stem}"
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                raise WorkerError(f"Cannot load MCP module: {path.name}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except Exception as err:
+                sys.modules.pop(module_name, None)
+                raise WorkerError(f"Could not import MCP module {path.name}: {err}") from err
+            server = getattr(module, "mcp", None)
+            if server is None:
+                continue
+
+            list_tools = getattr(server, "list_tools", None)
+            call_tool = getattr(server, "call_tool", None)
+            if callable(list_tools) and callable(call_tool):
+                for tool in await list_tools():
+                    name = getattr(tool, "name", None)
+                    schema = getattr(tool, "inputSchema", None)
+                    if not isinstance(schema, dict):
+                        schema = getattr(tool, "parameters", None)
+                    if not isinstance(name, str) or not isinstance(schema, dict):
+                        continue
+                    public_name = f"{path.stem}__{name}"
+                    if len(public_name) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", public_name):
+                        raise WorkerError(f"MCP tool name cannot be exposed to the model: {public_name}")
+                    if public_name in self.dynamic_tools:
+                        raise WorkerError(f"Duplicate discovered MCP tool name: {public_name}")
+                    description = getattr(tool, "description", None) or f"MCP tool {name} from {path.name}"
+                    self.dynamic_tools[public_name] = (server, name, "tool", None, ())
+                    self.available_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": public_name,
+                            "description": description,
+                            "parameters": schema,
+                        },
+                    })
+
+            list_resources = getattr(server, "list_resources", None)
+            list_templates = getattr(server, "list_resource_templates", None)
+            read_resource = getattr(server, "read_resource", None)
+            if not (callable(list_resources) and callable(read_resource)):
+                continue
+            resources = [(item, False) for item in await list_resources()]
+            if callable(list_templates):
+                resources.extend((item, True) for item in await list_templates())
+            for resource, is_template in resources:
+                uri = getattr(resource, "uri" if not is_template else "uriTemplate", None)
+                if is_template and not isinstance(uri, str):
+                    uri = getattr(resource, "uri_template", None)
+                if not isinstance(uri, str):
+                    continue
+                resource_name = getattr(resource, "name", None) or uri
+                public_name = f"{path.stem}__resource__{resource_name}"
+                public_name = re.sub(r"[^A-Za-z0-9_-]", "_", public_name)
+                if len(public_name) > 64:
+                    public_name = public_name[:64]
+                if public_name in self.dynamic_tools:
+                    raise WorkerError(f"Duplicate discovered MCP resource name: {public_name}")
+                variables = tuple(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", uri)) if is_template else ()
+                properties = {variable: {"type": "string"} for variable in variables}
+                description = getattr(resource, "description", None) or f"Read MCP resource {uri}"
+                parameters: dict[str, Any] = {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(variables),
+                    "additionalProperties": False,
+                }
+                self.dynamic_tools[public_name] = (server, uri, "resource", uri, variables)
+                self.available_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": public_name,
+                        "description": description,
+                        "parameters": parameters,
+                    },
+                })
+
+    async def _call_discovered_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        server, target, kind, uri_template, variables = self.dynamic_tools[name]
+        if kind == "tool":
+            result = await server.call_tool(target, arguments)
+            if hasattr(result, "model_dump"):
+                return result.model_dump(mode="json")
+            return result
+        uri = target
+        for variable in variables:
+            value = arguments.get(variable)
+            if not isinstance(value, str):
+                raise WorkerError(f"MCP resource argument {variable} must be a string")
+            uri = uri.replace("{" + variable + "}", quote(value, safe=""))
+        result = await server.read_resource(uri)
+        if hasattr(result, "model_dump"):
+            return result.model_dump(mode="json")
+        if not isinstance(result, (list, tuple)):
+            return result
+        return [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else {
+                "mime_type": getattr(item, "mimeType", getattr(item, "mime_type", None)),
+                "text": getattr(item, "text", None),
+                "blob": getattr(item, "blob", None),
+            }
+            for item in result
+        ]
 
     async def initialize(self) -> None:
+        await self._discover_mcp_tools()
         await self.client.request("worker.hello", {"agent_id": self.agent_id, "protocol_version": 1})
         result = await self.client.request("history.get", {})
         history = result.get("history") if isinstance(result, dict) else None
@@ -324,9 +458,20 @@ class AgentWorker:
         self.history = history
         await self.client.request("agent.update_state", {"state": "running"})
 
-    @staticmethod
-    def _api_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Build a bounded model view without modifying durable transcript."""
+    def _api_messages(self, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Build a bounded model view with the actual available tool names."""
+        tool_lines: list[str] = []
+        for tool in self.available_tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+                continue
+            name = function["name"]
+            description = function.get("description")
+            if isinstance(description, str) and description:
+                tool_lines.append(f"- {name}: {description[:300]}")
+            else:
+                tool_lines.append(f"- {name}")
+        system_prompt = SYSTEM_PROMPT + "\n\nAvailable tools:\n" + "\n".join(tool_lines)
         allowed = {"role", "content", "name", "tool_calls", "tool_call_id"}
         clean_history = [
             {key: value for key, value in message.items() if key in allowed}
@@ -334,7 +479,7 @@ class AgentWorker:
             if isinstance(message.get("role"), str)
         ]
         selected: list[dict[str, Any]] = []
-        total_bytes = len(SYSTEM_PROMPT.encode("utf-8"))
+        total_bytes = len(system_prompt.encode("utf-8"))
         for message in reversed(clean_history[-MAX_CONTEXT_MESSAGES:]):
             message_bytes = len(json.dumps(message, ensure_ascii=False).encode("utf-8"))
             if total_bytes + message_bytes > MAX_CONTEXT_BYTES:
@@ -355,7 +500,7 @@ class AgentWorker:
         # landed in the middle of a tool exchange.
         while selected and selected[0].get("role") == "tool":
             selected.pop(0)
-        output: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        output: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         output.extend(selected)
         return output
 
@@ -366,6 +511,8 @@ class AgentWorker:
         self.history.extend(messages)
 
     async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name in self.dynamic_tools:
+            return await self._call_discovered_tool(name, arguments)
         if name == "read_file":
             return _read_file(self.root, arguments)
         if name == "edit_file":
@@ -449,7 +596,7 @@ class AgentWorker:
         while True:
             completion = await self.client.request(
                 "model.complete",
-                {"messages": self._api_messages(self.history), "tools": TOOLS, "tool_choice": "auto"},
+                {"messages": self._api_messages(self.history), "tools": self.available_tools, "tool_choice": "auto"},
             )
             if not isinstance(completion, dict):
                 raise WorkerError("Controller returned an invalid completion")

@@ -58,6 +58,25 @@ def test_builds_isolated_project_command_and_defaults_to_no_network(tmp_path: Pa
     assert result.project_path == project
 
 
+def test_mounts_trusted_runtime_directory_read_only_at_original_path(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    runtime = tmp_path / "venv"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin" / "python").write_text("interpreter", encoding="utf-8")
+
+    result = build_sandbox_command(
+        snapshot=_snapshot(project, tmp_path / "snapshot" / "project"),
+        project_config=ProjectConfig(root=project),
+        bwrap=_fake_bwrap(tmp_path),
+        runtime_dirs=(runtime,),
+    )
+
+    runtime_index = result.argv.index(str(runtime))
+    assert result.argv[runtime_index - 1] == "--ro-bind"
+    assert result.argv[runtime_index + 1] == str(runtime)
+
+
 def test_rejects_project_home_mount_not_authorized_by_controller(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

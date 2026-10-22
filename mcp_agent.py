@@ -100,6 +100,12 @@ async def get_agent_status(agent_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def get_agent_log(agent_id: str, max_bytes: int = 65536) -> dict[str, Any]:
+    """Return the bounded tail of a worker's captured stderr log."""
+    return await _controller().get_agent_log(agent_id, max_bytes=max_bytes)
+
+
+@mcp.tool()
 async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
     """Return the complete CopilotChat-format conversation message array."""
     return await _controller().get_history(agent_id)

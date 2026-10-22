@@ -13,6 +13,8 @@ import os
 import re
 import secrets
 import inspect
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +47,42 @@ ModelCallback = Callable[[dict[str, Any]], Any | Awaitable[Any]]
 PatchSubmitCallback = Callable[[ProjectSnapshot, dict[str, Any]], Any | Awaitable[Any]]
 
 
+def _configure_snapshot_git_identity(source_root: Path, snapshot_root: Path) -> None:
+    """Copy only the controller project's effective commit identity locally."""
+    identity: dict[str, str] = {}
+    for key in ("user.name", "user.email"):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(source_root), "config", "--get", key],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as err:
+            raise AgentControllerError(f"Could not read Git {key} from controller project: {err}") from err
+        if result.returncode != 0 or not result.stdout.strip():
+            raise AgentControllerError(
+                f"Git {key} is not configured for the controller project; configure it before starting agents"
+            )
+        identity[key] = result.stdout.rstrip("\n")
+
+    for key, value in identity.items():
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(snapshot_root), "config", "--local", key, value],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as err:
+            raise AgentControllerError(f"Could not set snapshot Git {key}: {err}") from err
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"git config failed with exit code {result.returncode}"
+            raise AgentControllerError(f"Could not set snapshot Git {key}: {detail}")
+
+
 class AgentControllerError(RuntimeError):
     """Raised for invalid controller requests or lifecycle operations."""
 
@@ -75,7 +113,7 @@ class AgentController:
         model_callback: ModelCallback,
         patch_submit_callback: PatchSubmitCallback | None = None,
         sandbox_policy: SandboxPolicy = SandboxPolicy(),
-        worker_command: tuple[str, ...] = ("/usr/bin/python3", "-m", "agent_worker"),
+        worker_command: tuple[str, ...] | None = None,
         bwrap: str = "bwrap",
         max_model_calls: int = 100,
         max_runtime_seconds: int = 3600,
@@ -88,6 +126,11 @@ class AgentController:
         if state_path.is_symlink() or not state_path.is_dir() or state_path.stat().st_uid != os.getuid():
             raise AgentControllerError("Agent state root must be a real directory owned by the controller user")
         os.chmod(state_path, 0o700)
+        self.log_root = state_path / "logs"
+        self.log_root.mkdir(mode=0o700, exist_ok=True)
+        if self.log_root.is_symlink() or not self.log_root.is_dir() or self.log_root.stat().st_uid != os.getuid():
+            raise AgentControllerError("Agent log directory must be a real directory owned by the controller user")
+        os.chmod(self.log_root, 0o700)
         self.snapshot_root = Path(snapshot_root).expanduser().absolute()
         if self.snapshot_root == self.project_root or self.snapshot_root.is_relative_to(self.project_root):
             raise AgentControllerError("Snapshot root must be outside the source project")
@@ -100,7 +143,7 @@ class AgentController:
         self.model_callback = model_callback
         self.patch_submit_callback = patch_submit_callback
         self.sandbox_policy = sandbox_policy
-        self.worker_command = worker_command
+        self.worker_command = worker_command or (sys.executable, "-m", "agent_worker")
         self.bwrap = bwrap
         self.max_model_calls = max(1, int(max_model_calls))
         self.max_runtime_seconds = max(1, int(max_runtime_seconds))
@@ -150,9 +193,11 @@ class AgentController:
         snapshot: ProjectSnapshot | None = None
         ipc: AgentControlServer | None = None
         process: asyncio.subprocess.Process | None = None
+        worker_log = None
         created = False
         try:
             snapshot = create_project_snapshot(self.project_root, destination)
+            _configure_snapshot_git_identity(self.project_root, snapshot.project_root)
             socket_dir = Path(self.store.state_root) / "sockets"
             socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(socket_dir, 0o700)
@@ -175,6 +220,7 @@ class AgentController:
                 "max_model_calls": min(requested_calls, self.max_model_calls),
                 "max_runtime_seconds": min(requested_runtime, self.max_runtime_seconds),
                 "socket_path": str(socket_path),
+                "worker_log": str(self.log_root / f"{agent_id}.log"),
                 "parent_agent_id": None,
             }
             self.store.create(agent_id, metadata, history)
@@ -204,14 +250,20 @@ class AgentController:
                     "PYTHONPATH": "/opt/agent-runtime",
                 },
                 runtime_files=(Path(__file__).with_name("agent_worker.py"), Path(__file__).with_name("agent_ipc.py")),
+                runtime_dirs=(Path(sys.prefix),),
             )
+            log_path = self.log_root / f"{agent_id}.log"
+            log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            worker_log = os.fdopen(log_fd, "wb", buffering=0)
             process = await asyncio.create_subprocess_exec(
                 *sandbox.argv,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=worker_log,
                 start_new_session=True,
             )
+            worker_log.close()
+            worker_log = None
             self.store.update_metadata(agent_id, {"worker_pid": process.pid, "state": "running"})
             runtime = _AgentRuntime(
                 agent_id=agent_id,
@@ -230,6 +282,8 @@ class AgentController:
             )
             return {"status": "ok", "agent_id": agent_id, "state": "running", "base_commit": snapshot.base_commit}
         except Exception as err:
+            if worker_log is not None:
+                worker_log.close()
             if process is not None and process.returncode is None:
                 process.kill()
                 await process.wait()
@@ -366,7 +420,7 @@ class AgentController:
             return {"command": "timeout"}
 
     async def _monitor_process(self, agent_id: str, process: asyncio.subprocess.Process) -> None:
-        _stdout, stderr = await process.communicate()
+        await process.wait()
         runtime = self._runtimes.get(agent_id)
         if runtime is None:
             return
@@ -398,6 +452,23 @@ class AgentController:
 
     async def get_status(self, agent_id: str) -> dict[str, Any]:
         return self.store.get_metadata(agent_id)
+
+    async def get_agent_log(self, agent_id: str, *, max_bytes: int = 64 * 1024) -> dict[str, Any]:
+        """Return the bounded tail of a worker's captured stderr log."""
+        validate_agent_id(agent_id)
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 1024 * 1024:
+            raise AgentControllerError("max_bytes must be between 1 and 1048576")
+        self.store.get_metadata(agent_id)
+        log_path = self.log_root / f"{agent_id}.log"
+        if log_path.is_symlink() or not log_path.is_file():
+            return {"agent_id": agent_id, "log": "", "truncated": False}
+        with log_path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            truncated = size > max_bytes
+            stream.seek(max(0, size - max_bytes))
+            content = stream.read(max_bytes).decode("utf-8", errors="replace")
+        return {"agent_id": agent_id, "log": content, "truncated": truncated}
 
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
         return self.store.get_history(agent_id)
