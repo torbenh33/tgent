@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
+import inspect
 import os
 import shutil
 import stat
@@ -40,6 +42,7 @@ class RemoteUploadManager:
             raise RemoteUploadError(f"Uploads root is not a real directory: {root}")
         os.chmod(root, 0o700)
         self.root = root.resolve(strict=True)
+        self._async_start_lock = asyncio.Lock()
         self.incoming = self.root / "incoming"
         self.incoming.mkdir(mode=0o700, exist_ok=True)
         self.completed = self.root / "completed"
@@ -146,6 +149,38 @@ class RemoteUploadManager:
                 upload_id,
                 lambda checkout: start_agent(checkout, start_request),
             )
+
+        return handle
+
+    def start_async_handler(
+        self,
+        start_agent: Callable[[Path, dict[str, object]], _T],
+    ) -> Callable[[dict[str, object]], _T]:
+        """Async start handler that retains uploads through awaited startup."""
+        async def handle(request: dict[str, object]) -> _T:
+            upload_id = request["upload_id"]
+            start_request = request["request"]
+            if not isinstance(upload_id, str) or not isinstance(start_request, dict):
+                raise RemoteUploadError("Invalid validated start request")
+            _validate_upload_id(upload_id)
+            source = self.completed / upload_id
+            # This daemon serializes controller starts in-process; the async
+            # lock avoids blocking the event loop while a worker starts.
+            async with self._async_start_lock:
+                try:
+                    info = source.lstat()
+                except FileNotFoundError as err:
+                    raise RemoteUploadError("Upload directory does not exist") from err
+                resolved = source.resolve(strict=True)
+                if not stat.S_ISDIR(info.st_mode) or resolved.parent != self.completed:
+                    raise RemoteUploadError("Upload path must be a real directory")
+                if not any(source.iterdir()):
+                    raise RemoteUploadError("Upload directory is empty")
+                result = start_agent(resolved, start_request)
+                if inspect.isawaitable(result):
+                    result = await result
+                shutil.rmtree(resolved)
+                return result
 
         return handle
 

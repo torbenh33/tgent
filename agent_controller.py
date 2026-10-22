@@ -113,7 +113,7 @@ class AgentController:
     def __init__(
         self,
         *,
-        project_root: str | os.PathLike[str],
+        project_root: str | os.PathLike[str] | None,
         state_root: str | os.PathLike[str],
         snapshot_root: str | os.PathLike[str],
         model_callback: ModelCallback,
@@ -121,12 +121,15 @@ class AgentController:
         sandbox_policy: SandboxPolicy = SandboxPolicy(),
         worker_command: tuple[str, ...] | None = None,
         runtime_layout: SandboxRuntimeLayout | None = None,
+        runtime_version: str | None = None,
         bwrap: str = "bwrap",
         max_model_calls: int = 100,
         max_runtime_seconds: int = 3600,
     ) -> None:
-        self.project_root = discover_project_root(project_root)
-        self.project_config: ProjectConfig = load_project_config(self.project_root)
+        self.project_root = None if project_root is None else discover_project_root(project_root)
+        self.project_config: ProjectConfig | None = (
+            None if self.project_root is None else load_project_config(self.project_root)
+        )
         self.store = AgentStore(state_root)
         state_path = self.store.state_root
         state_path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -139,7 +142,9 @@ class AgentController:
             raise AgentControllerError("Agent log directory must be a real directory owned by the controller user")
         os.chmod(self.log_root, 0o700)
         self.snapshot_root = Path(snapshot_root).expanduser().absolute()
-        if self.snapshot_root == self.project_root or self.snapshot_root.is_relative_to(self.project_root):
+        if self.project_root is not None and (
+            self.snapshot_root == self.project_root or self.snapshot_root.is_relative_to(self.project_root)
+        ):
             raise AgentControllerError("Snapshot root must be outside the source project")
         self.snapshot_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.snapshot_root.is_symlink() or not self.snapshot_root.is_dir():
@@ -151,6 +156,7 @@ class AgentController:
         self.patch_submit_callback = patch_submit_callback
         self.sandbox_policy = sandbox_policy
         self.worker_command = worker_command or (sys.executable, "-m", "agent_worker")
+        self.runtime_version = runtime_version
         self.runtime_layout = runtime_layout or build_runtime_layout(
             runtime_dirs=(Path(sys.prefix),),
             runtime_files=(Path(__file__).with_name("agent_worker.py"), Path(__file__).with_name("agent_ipc.py")),
@@ -196,8 +202,30 @@ class AgentController:
             raise AgentControllerError("requested limits must be positive integers")
         return history, calls, runtime
 
-    async def start_agent(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def start_agent(
+        self,
+        request: dict[str, Any],
+        *,
+        source_root: str | os.PathLike[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start an agent from the controller project or a trusted uploaded checkout.
+
+        ``source_root`` is intended for the remote upload manager, which passes
+        only its privately managed, finalized upload path. It is not an
+        externally supplied worker path.
+        """
         history, requested_calls, requested_runtime = self._validate_start_request(request)
+        if source_root is None:
+            if self.project_root is None:
+                raise AgentControllerError("A project source is required for this controller")
+            selected_project_root = self.project_root
+        else:
+            selected_project_root = discover_project_root(source_root)
+        selected_project_config = (
+            self.project_config
+            if selected_project_root == self.project_root
+            else load_project_config(selected_project_root)
+        )
         agent_id = secrets.token_hex(16)
         destination = self.snapshot_root / agent_id
         state = "starting"
@@ -207,8 +235,8 @@ class AgentController:
         worker_log = None
         created = False
         try:
-            snapshot = create_project_snapshot(self.project_root, destination)
-            _configure_snapshot_git_identity(self.project_root, snapshot.project_root)
+            snapshot = create_project_snapshot(selected_project_root, destination)
+            _configure_snapshot_git_identity(selected_project_root, snapshot.project_root)
             socket_dir = Path(self.store.state_root) / "sockets"
             socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(socket_dir, 0o700)
@@ -217,11 +245,12 @@ class AgentController:
             metadata = {
                 "schema_version": 1,
                 "agent_id": agent_id,
-                "project_root": str(self.project_root),
+                "project_root": str(selected_project_root),
                 "state": state,
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "base_commit": snapshot.base_commit,
+                "runtime_version": self.runtime_version,
                 "snapshot_root": str(snapshot.root),
                 "snapshot_project": str(snapshot.project_root),
                 "linked_worktree": snapshot.linked_worktree,
@@ -250,7 +279,7 @@ class AgentController:
             await ipc.start()
             sandbox = build_sandbox_command(
                 snapshot=snapshot,
-                project_config=self.project_config,
+                project_config=selected_project_config,
                 policy=self.sandbox_policy,
                 command=self.worker_command,
                 bwrap=self.bwrap,

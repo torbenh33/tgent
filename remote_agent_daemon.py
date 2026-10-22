@@ -40,6 +40,25 @@ def build_operation_handlers(
             raise TypeError(f"Lifecycle handler for {operation} must be callable")
         handlers[operation] = handler
     return handlers
+def build_async_operation_handlers(
+    uploads: RemoteUploadManager,
+    *,
+    start_agent,
+    lifecycle_handlers: Mapping[str, object],
+) -> dict[str, object]:
+    """Build handlers for a persistent asyncio controller service."""
+    handlers: dict[str, object] = {
+        "prepare_upload": uploads.prepare_upload_handler(),
+        "finalize_upload": uploads.finalize_upload_handler(),
+        "start": uploads.start_async_handler(start_agent),
+    }
+    for operation, handler in lifecycle_handlers.items():
+        if operation not in {"status", "history", "continue", "stop", "logs", "reap"}:
+            raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
+        if not callable(handler):
+            raise TypeError(f"Lifecycle handler for {operation} must be callable")
+        handlers[operation] = handler
+    return handlers
 
 
 def serve_stdio(

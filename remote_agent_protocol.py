@@ -13,7 +13,7 @@ from remote_agent_config import RemoteAgentConfig
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 1_048_576
 MAX_RESPONSE_BYTES = 4_194_304
-REMOTE_COMMAND = "tgent-agent-remote --stdio-v1"
+REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap"})
 
@@ -57,7 +57,7 @@ def validate_request(value: object) -> dict[str, object]:
         "continue": common | {"agent_id", "feedback"},
         "stop": common | {"agent_id"},
         "logs": common | {"agent_id", "max_bytes"},
-        "reap": common | {"older_than_seconds"},
+        "reap": common | {"agent_id"},
     }
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")
@@ -68,8 +68,6 @@ def validate_request(value: object) -> dict[str, object]:
         _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
-    elif operation == "reap":
-        _bounded_int(value.get("older_than_seconds"), "older_than_seconds", 60, 31_536_000)
     else:
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "history":

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 
 import pytest
 
-from remote_agent_daemon import build_operation_handlers, serve_stdio
+from remote_agent_daemon import build_async_operation_handlers, build_operation_handlers, serve_stdio
 from remote_agent_upload import RemoteUploadManager
 
 
@@ -29,6 +30,31 @@ def test_build_operation_handlers_exposes_only_explicit_operations(tmp_path) -> 
             start_agent=lambda _checkout, _request: None,
             lifecycle_handlers={"exec": lambda _request: None},
         )
+
+
+def test_async_handlers_await_start_callback_and_consume_upload(tmp_path) -> None:
+    uploads = RemoteUploadManager(tmp_path / "uploads")
+    incoming = uploads.create_incoming("upload-async")
+    (incoming / "project.txt").write_text("checkout", encoding="utf-8")
+    uploads.finalize_upload_handler()({"upload_id": "upload-async"})
+
+    async def start_agent(checkout, request):
+        assert (checkout / "project.txt").read_text(encoding="utf-8") == "checkout"
+        assert request == {"task": "async"}
+        return {"agent_id": "agent-async"}
+
+    handlers = build_async_operation_handlers(
+        uploads,
+        start_agent=start_agent,
+        lifecycle_handlers={},
+    )
+    result = asyncio.run(handlers["start"]({
+        "upload_id": "upload-async",
+        "request": {"task": "async"},
+    }))
+
+    assert result == {"agent_id": "agent-async"}
+    assert not (uploads.completed / "upload-async").exists()
 
 
 def test_stdio_dispatches_one_request_and_emits_one_response() -> None:
