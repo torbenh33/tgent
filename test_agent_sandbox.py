@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 
 from agent_project import ProjectConfig
-from agent_sandbox import SandboxError, SandboxPolicy, build_sandbox_command
+from agent_sandbox import (
+    RuntimeMount,
+    SandboxError,
+    SandboxPolicy,
+    SandboxRuntimeLayout,
+    build_sandbox_command,
+)
 from agent_snapshot import ProjectSnapshot
 
 
@@ -75,6 +81,26 @@ def test_mounts_trusted_runtime_directory_read_only_at_original_path(tmp_path: P
     runtime_index = result.argv.index(str(runtime))
     assert result.argv[runtime_index - 1] == "--ro-bind"
     assert result.argv[runtime_index + 1] == str(runtime)
+
+
+def test_runtime_layout_binds_mirror_source_to_sandbox_target(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    mirror = tmp_path / "runtime-mirror" / "usr"
+    (mirror / "bin").mkdir(parents=True)
+    (mirror / "bin" / "python3").write_text("interpreter", encoding="utf-8")
+    target = Path("/usr")
+
+    result = build_sandbox_command(
+        snapshot=_snapshot(project, tmp_path / "snapshot" / "project"),
+        project_config=ProjectConfig(root=project),
+        bwrap=_fake_bwrap(tmp_path),
+        runtime_layout=SandboxRuntimeLayout((RuntimeMount(mirror, target),)),
+    )
+
+    source_index = result.argv.index(str(mirror))
+    assert result.argv[source_index - 1] == "--ro-bind"
+    assert result.argv[source_index + 1] == str(target)
 
 
 def test_rejects_project_home_mount_not_authorized_by_controller(tmp_path: Path) -> None:

@@ -40,6 +40,22 @@ class SandboxCommand:
     home_path: Path
 
 
+@dataclass(frozen=True)
+class RuntimeMount:
+    """Host runtime source and its path inside the sandbox."""
+
+    source: Path
+    target: Path
+
+
+@dataclass(frozen=True)
+class SandboxRuntimeLayout:
+    """Prepared runtime trees and links used by Bubblewrap."""
+
+    mounts: tuple[RuntimeMount, ...]
+    symlinks: tuple[tuple[Path, str], ...] = ()
+
+
 _SYSTEM_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin")
 _SYSTEM_SYMLINKS = {
     "/bin": "usr/bin",
@@ -47,6 +63,42 @@ _SYSTEM_SYMLINKS = {
     "/lib": "usr/lib",
     "/lib64": "usr/lib64",
 }
+
+
+def build_runtime_layout(
+    *,
+    runtime_dirs: tuple[str | os.PathLike[str], ...] = (),
+    runtime_files: tuple[str | os.PathLike[str], ...] = (),
+) -> SandboxRuntimeLayout:
+    """Describe local host runtime mounts using their normal sandbox paths."""
+    mounts: list[RuntimeMount] = []
+    symlinks: list[tuple[Path, str]] = []
+    for raw_system_dir in _SYSTEM_DIRS:
+        source = Path(raw_system_dir)
+        if source.is_symlink():
+            link_target = _SYSTEM_SYMLINKS.get(raw_system_dir)
+            if link_target is None:
+                raise SandboxError(f"Unsupported system mount symlink: {raw_system_dir}")
+            symlinks.append((source, link_target))
+        elif source.is_dir():
+            mounts.append(RuntimeMount(source, source))
+    for raw_dir in runtime_dirs:
+        source = Path(raw_dir).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise SandboxError(f"Trusted runtime directory is not a directory: {source}")
+        if any(_path_is_within(source, Path(system_dir)) for system_dir in _SYSTEM_DIRS):
+            continue
+        mounts.append(RuntimeMount(source, source))
+    names: set[str] = set()
+    for raw_file in runtime_files:
+        source = Path(raw_file).expanduser().resolve(strict=True)
+        if not source.is_file():
+            raise SandboxError(f"Trusted runtime entry is not a regular file: {source}")
+        if source.name in names:
+            raise SandboxError(f"Trusted runtime files have duplicate basenames: {source.name}")
+        names.add(source.name)
+        mounts.append(RuntimeMount(source, Path("/opt/agent-runtime") / source.name))
+    return SandboxRuntimeLayout(tuple(mounts), tuple(symlinks))
 
 
 def _relative_home_path(value: Path) -> Path:
@@ -92,6 +144,7 @@ def build_sandbox_command(
     worker_env: dict[str, str] | None = None,
     runtime_files: tuple[str | os.PathLike[str], ...] = (),
     runtime_dirs: tuple[str | os.PathLike[str], ...] = (),
+    runtime_layout: SandboxRuntimeLayout | None = None,
 ) -> SandboxCommand:
     """Build a restrictive Bubblewrap argv for a worker in a project snapshot.
 
@@ -147,24 +200,39 @@ def build_sandbox_command(
         denied_path = sorted(denied, key=str)[0]
         raise SandboxError(f"Project requested a home mount not authorized by controller policy: {denied_path}")
 
-    runtime_mounts: list[Path] = []
-    for raw_runtime_dir in runtime_dirs:
-        source = Path(raw_runtime_dir).expanduser().resolve(strict=True)
-        if not source.is_dir():
-            raise SandboxError(f"Trusted runtime directory is not a directory: {source}")
-        # A trusted venv inside the project may be overlaid read-only after
-        # the snapshot bind. Reject only runtime trees that would hide the
-        # project mount (or replace it entirely).
-        if source == project_target or _path_is_within(project_target, source):
-            raise SandboxError(f"Trusted runtime directory contains the project mount: {source}")
+    if runtime_layout is not None and (runtime_dirs or runtime_files):
+        raise SandboxError("Specify runtime_layout or runtime_dirs/runtime_files, not both")
+    if runtime_layout is None:
+        runtime_layout = build_runtime_layout(runtime_dirs=runtime_dirs, runtime_files=runtime_files)
+
+    runtime_mounts: list[RuntimeMount] = []
+    runtime_targets: list[Path] = []
+    for mount in runtime_layout.mounts:
+        source = Path(mount.source).expanduser().resolve(strict=True)
+        target = Path(mount.target)
+        if not target.is_absolute() or target == Path(target.anchor):
+            raise SandboxError(f"Invalid sandbox runtime mount target: {target}")
+        if not source.is_file() and not source.is_dir():
+            raise SandboxError(f"Trusted runtime source is not a regular file or directory: {source}")
         if source == Path(source.anchor):
-            raise SandboxError("Refusing to mount the filesystem root as a runtime directory")
-        # Standard system trees are already mounted read-only above.
-        if any(_path_is_within(source, Path(system_dir)) for system_dir in _SYSTEM_DIRS):
-            continue
-        if any(_path_is_within(source, existing) or _path_is_within(existing, source) for existing in runtime_mounts):
-            raise SandboxError(f"Overlapping trusted runtime directories: {source}")
-        runtime_mounts.append(source)
+            raise SandboxError("Refusing to mount the filesystem root as a runtime source")
+        if source.is_dir() and (target == project_target or _path_is_within(project_target, target)):
+            raise SandboxError(f"Trusted runtime directory contains or replaces project mount: {target}")
+        if any(_path_is_within(target, prior) or _path_is_within(prior, target) for prior in runtime_targets):
+            raise SandboxError(f"Overlapping sandbox runtime mount targets: {target}")
+        runtime_targets.append(target)
+        runtime_mounts.append(RuntimeMount(source, target))
+    symlink_targets: set[Path] = set()
+    for target, link_target in runtime_layout.symlinks:
+        target = Path(target)
+        if not target.is_absolute() or target == Path(target.anchor) or not link_target:
+            raise SandboxError(f"Invalid sandbox runtime symlink: {target}")
+        if target in symlink_targets or any(
+            _path_is_within(target, mount_target) or _path_is_within(mount_target, target)
+            for mount_target in runtime_targets
+        ):
+            raise SandboxError(f"Sandbox runtime symlink overlaps another runtime target: {target}")
+        symlink_targets.add(target)
 
     mounts: list[tuple[Path, Path, bool]] = []
     for relative, read_only in [*((p, True) for p in requested_ro), *((p, False) for p in requested_rw)]:
@@ -183,10 +251,12 @@ def build_sandbox_command(
         for _source_b, target_b, _ro_b in mounts[index + 1 :]:
             if _path_is_within(target_a, target_b) or _path_is_within(target_b, target_a):
                 raise SandboxError(f"Overlapping home mount targets: {target_a} and {target_b}")
-    for runtime_dir in runtime_mounts:
+    for runtime_mount in runtime_mounts:
         for _source, target, _read_only in mounts:
-            if _path_is_within(runtime_dir, target) or _path_is_within(target, runtime_dir):
-                raise SandboxError(f"Trusted runtime directory overlaps an authorized home mount: {runtime_dir}")
+            if _path_is_within(runtime_mount.target, target) or _path_is_within(target, runtime_mount.target):
+                raise SandboxError(
+                    f"Trusted runtime mount overlaps an authorized home mount: {runtime_mount.target}"
+                )
 
     argv: list[str] = [
         bwrap_path,
@@ -198,21 +268,16 @@ def build_sandbox_command(
     if policy.network:
         argv.append("--share-net")
 
-    # Bubblewrap starts with an empty root. Bind only required runtime trees;
-    # preserve standard symlink locations without exposing their host targets.
-    for system_dir in _SYSTEM_DIRS:
-        source = Path(system_dir)
-        if source.is_symlink():
-            link_target = _SYSTEM_SYMLINKS.get(system_dir)
-            if link_target is None:
-                raise SandboxError(f"Unsupported system mount symlink: {system_dir}")
-            argv.extend(("--symlink", link_target, system_dir))
-        elif source.is_dir():
-            argv.extend(("--ro-bind", system_dir, system_dir))
+    # Bubblewrap starts with an empty root. Recreate symlink locations and
+    # bind only explicitly selected runtime trees read-only.
+    created_dirs: set[Path] = set()
+    for target, link_target in runtime_layout.symlinks:
+        target = Path(target)
+        _add_parent_dirs(argv, target, Path(target.anchor), created_dirs)
+        argv.extend(("--symlink", link_target, str(target)))
 
     argv.extend(("--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"))
     argv.extend(("--dir", "/etc"))
-    created_dirs: set[Path] = set()
     _add_parent_dirs(argv, home_root, Path(home_root.anchor), created_dirs)
     argv.extend(("--tmpfs", str(home_root)))
     created_dirs.add(home_root)
@@ -222,29 +287,17 @@ def build_sandbox_command(
     _add_parent_dirs(argv, project_target, Path(project_target.anchor), created_dirs)
     argv.extend(("--bind", str(snapshot_project), str(project_target)))
 
-    # A virtual environment is mounted read-only at its original absolute path
-    # so the interpreter can find pyvenv.cfg, its standard library, and packages.
-    for runtime_dir in sorted(runtime_mounts, key=str):
-        _add_parent_dirs(argv, runtime_dir, Path(runtime_dir.anchor), created_dirs)
-        argv.extend(("--ro-bind", str(runtime_dir), str(runtime_dir)))
+    # Runtime mounts retain their sandbox paths while their sources may come
+    # from a prepared remote mirror.
+    for mount in sorted(runtime_mounts, key=lambda entry: str(entry.target)):
+        _add_parent_dirs(argv, mount.target, Path(mount.target.anchor), created_dirs)
+        argv.extend(("--ro-bind", str(mount.source), str(mount.target)))
 
     for source, target, read_only in sorted(mounts, key=lambda entry: str(entry[1])):
         _add_parent_dirs(argv, target, home_target, created_dirs)
         kind = "--ro-bind" if read_only else "--bind"
         argv.extend((kind, str(source), str(target)))
 
-    if runtime_files:
-        runtime_dir = Path("/opt/agent-runtime")
-        argv.extend(("--dir", "/opt", "--dir", str(runtime_dir)))
-        used_names: set[str] = set()
-        for raw_runtime_file in runtime_files:
-            source = Path(raw_runtime_file).expanduser().resolve(strict=True)
-            if not source.is_file():
-                raise SandboxError(f"Trusted runtime entry is not a regular file: {source}")
-            if source.name in used_names:
-                raise SandboxError(f"Trusted runtime files have duplicate basenames: {source.name}")
-            used_names.add(source.name)
-            argv.extend(("--ro-bind", str(source), str(runtime_dir / source.name)))
 
     if controller_socket is not None:
         socket_source = Path(controller_socket).expanduser().absolute()
