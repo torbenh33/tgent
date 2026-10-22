@@ -153,8 +153,11 @@ class RemoteAgentClient:
             raise RemoteProtocolError("Remote request exceeds the size limit")
 
         try:
+            app_dir = self.config.remote_base_dir / "app"
+            python = app_dir / ".venv" / "bin" / "python"
             remote_command = (
-                f"python3 -m remote_agent_service --base-dir "
+                f"cd {shlex.quote(str(app_dir))} && "
+                f"{shlex.quote(str(python))} -m remote_agent_service --base-dir "
                 f"{shlex.quote(str(self.config.remote_base_dir))} --stdio-v1"
             )
             completed = subprocess.run(
@@ -167,6 +170,12 @@ class RemoteAgentClient:
         except (OSError, subprocess.TimeoutExpired) as err:
             raise RemoteProtocolError(f"Remote SSH request failed: {err}") from err
         if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            if detail:
+                detail = detail[-1000:]
+                raise RemoteProtocolError(
+                    f"Remote endpoint exited with status {completed.returncode}: {detail}"
+                )
             raise RemoteProtocolError(f"Remote endpoint exited with status {completed.returncode}")
         if len(completed.stdout) > MAX_RESPONSE_BYTES:
             raise RemoteProtocolError("Remote response exceeds the size limit")
@@ -180,12 +189,19 @@ class RemoteAgentClient:
             raise RemoteProtocolError("Remote endpoint returned an invalid response envelope")
         if response["schema_version"] != SCHEMA_VERSION:
             raise RemoteProtocolError("Remote endpoint protocol version mismatch")
-        if response["request_id"] != validated["request_id"]:
-            raise RemoteProtocolError("Remote response request_id does not match")
         if not isinstance(response["ok"], bool):
             raise RemoteProtocolError("Remote response has an invalid ok field")
         if response["ok"] and response["error"] is not None:
             raise RemoteProtocolError("Successful remote response unexpectedly has an error")
         if not response["ok"] and not isinstance(response["error"], dict):
             raise RemoteProtocolError("Failed remote response has no structured error")
+        if not response["ok"] and response["request_id"] is None:
+            error = response["error"]
+            detail = error.get("message", "Remote endpoint rejected the request")
+            raise RemoteProtocolError(str(detail)[:500])
+        if response["request_id"] != validated["request_id"]:
+            raise RemoteProtocolError(
+                "Remote response request_id does not match "
+                f"(expected {validated['request_id']!r}, got {response['request_id']!r})"
+            )
         return response

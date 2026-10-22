@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+import os
+import socket
 from datetime import datetime, timezone
+
+import pytest
 from pathlib import Path, PurePosixPath
 
 from agent_sandbox import RuntimeManifest, SandboxRuntimeLayout, write_runtime_manifest
@@ -67,6 +73,66 @@ def test_main_uses_command_line_base_dir_for_stdio_proxy(monkeypatch) -> None:
 
     assert result == 0
     assert called == [Path("/srv/tgent/state/remote-agent.sock")]
+def test_service_removes_stale_socket_after_acquiring_lock(tmp_path) -> None:
+    import remote_agent_service
+
+    service = remote_agent_service.RemoteAgentService.__new__(remote_agent_service.RemoteAgentService)
+    service.socket_path = tmp_path / "remote-agent.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(service.socket_path))
+    listener.close()
+    service._service_lock_fd = None
+
+    service._acquire_service_lock_and_clear_stale_socket()
+
+    assert not service.socket_path.exists()
+    assert service._service_lock_fd is not None
+    os.close(service._service_lock_fd)
+
+
+def test_service_refuses_active_socket_after_acquiring_lock(tmp_path) -> None:
+    import remote_agent_service
+
+    service = remote_agent_service.RemoteAgentService.__new__(remote_agent_service.RemoteAgentService)
+    service.socket_path = tmp_path / "remote-agent.sock"
+    service._service_lock_fd = None
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(service.socket_path))
+    listener.listen()
+    try:
+        with pytest.raises(RuntimeError, match="Service socket is active"):
+            service._acquire_service_lock_and_clear_stale_socket()
+    finally:
+        listener.close()
+
+
+def test_stdio_proxy_exposes_service_socket_connection_failure(monkeypatch) -> None:
+    import remote_agent_service
+
+    class BrokenSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            raise ConnectionRefusedError("service socket unavailable")
+
+    output = io.BytesIO()
+    monkeypatch.setattr(remote_agent_service.socket, "socket", lambda *_args: BrokenSocket())
+    monkeypatch.setattr(remote_agent_service.sys, "stdin", type("Input", (), {"buffer": io.BytesIO(b"{}" + bytes((10,)))})())
+    monkeypatch.setattr(remote_agent_service.sys, "stdout", type("Output", (), {"buffer": output})())
+
+    result = remote_agent_service.proxy_stdio(Path("/run/remote-agent.sock"))
+
+    response = json.loads(output.getvalue())
+    assert result == 0
+    assert response["ok"] is False
+    assert "ConnectionRefusedError: service socket unavailable" in response["error"]["message"]
 
 
 def test_dispatch_does_not_expose_unregistered_operations() -> None:

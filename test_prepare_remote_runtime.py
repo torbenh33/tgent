@@ -24,6 +24,18 @@ def test_preparation_publishes_manifest_after_rsync(tmp_path, monkeypatch) -> No
         symlinks=((Path("/bin"), "usr/bin"),),
     )
     monkeypatch.setattr(preparation, "build_runtime_layout", lambda **_kwargs: layout)
+    monkeypatch.setattr(
+        preparation,
+        "_previous_runtime_mounts",
+        lambda *_args: {
+            Path("/usr/local/python"): PurePosixPath(
+                "/srv/tgent/runtime/versions/runtime-old/mounts/mount-000"
+            ),
+            Path("/opt/agent-runtime/agent_worker.py"): PurePosixPath(
+                "/srv/tgent/runtime/versions/runtime-old/mounts/mount-001"
+            ),
+        },
+    )
     calls = []
 
     def fake_run(argv, *, check, **kwargs):
@@ -52,6 +64,12 @@ def test_preparation_publishes_manifest_after_rsync(tmp_path, monkeypatch) -> No
     rsync_calls = [call for call in calls if call[0] == "rsync"]
     assert len(rsync_calls) == 3
     assert all("--no-owner" in call and "--no-group" in call for call in rsync_calls[:2])
+    assert "--exclude=/lib/cups/backend/cups-brf" in rsync_calls[0]
+    assert (
+        "--link-dest=/srv/tgent/runtime/versions/runtime-old/mounts/mount-000"
+        in rsync_calls[0]
+    )
+    assert not any(argument.startswith("--link-dest=") for argument in rsync_calls[1])
     assert any(call[:3] == ("ssh", "beep", "uname -m") for call in calls)
     assert any("PYTHONPATH=/srv/tgent/runtime/.staging-runtime-test/mounts/agent-runtime" in call[2]
                for call in calls if call[:2] == ("ssh", "beep"))

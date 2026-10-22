@@ -12,6 +12,7 @@ and their expected symlink layout come from :func:`build_runtime_layout`.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -112,20 +113,27 @@ def prepare_remote_runtime(
     )
 
     _ssh(config, "install", "-d", "--", str(staging / "mounts"), str(versions_root))
+    previous_mounts = _previous_runtime_mounts(config, versions_root)
     try:
-        for source, destination in rsync_jobs:
-            subprocess.run(
-                (
+        for index, (source, destination) in enumerate(rsync_jobs):
+            rsync_argv = [
                     rsync,
                     "-aHAX",
                     "--no-owner",
                     "--no-group",
-                    "--",
-                    os.fspath(source) + ("/" if source.is_dir() else ""),
-                    _remote_path(config.ssh_host, destination),
-                ),
-                check=True,
-            )
+                    # This host-only CUPS backend is unreadable to regular
+                    # users and is not required by the worker runtime.
+                    "--exclude=/lib/cups/backend/cups-brf",
+                ]
+            previous_source = previous_mounts.get(local_layout.mounts[index].target)
+            if source.is_dir() and previous_source is not None:
+                rsync_argv.append(f"--link-dest={previous_source}")
+            rsync_argv.extend((
+                "--",
+                os.fspath(source) + ("/" if source.is_dir() else ""),
+                _remote_path(config.ssh_host, destination),
+            ))
+            subprocess.run(tuple(rsync_argv), check=True)
         _preflight_staged_runtime(
             config,
             staging,
@@ -172,6 +180,61 @@ def prepare_remote_runtime(
             pass
         raise
     return manifest
+def _previous_runtime_mounts(
+    config: RemoteAgentConfig,
+    versions_root: PurePosixPath,
+) -> dict[Path, PurePosixPath]:
+    """Find the newest valid runtime's mounts for rsync hard-link reuse."""
+    try:
+        output = _ssh_output(
+            config,
+            "find",
+            str(versions_root),
+            "-mindepth",
+            "2",
+            "-maxdepth",
+            "2",
+            "-type",
+            "f",
+            "-name",
+            "manifest.json",
+            "-printf",
+            "%h\\n",
+        )
+    except subprocess.CalledProcessError:
+        # Reuse only accelerates a deployment; a missing listing must not
+        # prevent publishing a fresh, independently copied runtime.
+        return {}
+
+    candidates: list[PurePosixPath] = []
+    for raw_path in output.splitlines():
+        candidate = PurePosixPath(raw_path)
+        if candidate.parent != versions_root or not candidate.name.startswith("runtime-"):
+            continue
+        candidates.append(candidate)
+
+    for candidate in sorted(set(candidates), key=lambda path: path.name, reverse=True):
+        try:
+            encoded = _ssh_output(config, "cat", "--", str(candidate / "manifest.json"))
+            manifest = RuntimeManifest.from_dict(json.loads(encoded))
+        except (subprocess.CalledProcessError, json.JSONDecodeError, SandboxError):
+            continue
+        if manifest.version != candidate.name:
+            continue
+        mounts: dict[Path, PurePosixPath] = {}
+        for mount in manifest.layout.mounts:
+            source = PurePosixPath(mount.source)
+            if (
+                source.parent != candidate / "mounts"
+                or not source.name.startswith("mount-")
+                or source.name[6:] != f"{len(mounts):03d}"
+            ):
+                continue
+            mounts[mount.target] = source
+        if mounts:
+            return mounts
+    return {}
+
 
 def _preflight_staged_runtime(
     config: RemoteAgentConfig,

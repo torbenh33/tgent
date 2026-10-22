@@ -14,7 +14,7 @@ def test_render_unit_uses_configured_remote_paths() -> None:
 
     rendered = deployment._render_unit(config)
 
-    assert 'WorkingDirectory="/srv/tgent/app"' in rendered
+    assert "WorkingDirectory=/srv/tgent/app" in rendered
     assert (
         'ExecStart="/srv/tgent/app/.venv/bin/python" -m remote_agent_service '
         '--serve --base-dir "/srv/tgent"'
@@ -46,7 +46,7 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
         if argv[0] == "rsync" and "--delete" not in argv:
             rendered_file = Path(argv[-2])
             assert rendered_file.read_text(encoding="utf-8").startswith("[Unit]")
-            assert 'WorkingDirectory="/srv/tgent/app"' in rendered_file.read_text(encoding="utf-8")
+            assert "WorkingDirectory=/srv/tgent/app" in rendered_file.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(deployment.subprocess, "run", fake_run)
@@ -64,7 +64,10 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
     assert events == ["app", "runtime", "unit"]
     app_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" in argv)
     assert app_sync[1:3] == ("-a", "--delete")
-    assert ".venv/" in app_sync
+    assert not any(
+        app_sync[index] == "--exclude" and app_sync[index + 1] == ".venv/"
+        for index in range(len(app_sync) - 1)
+    )
     assert app_sync[-1] == "beep:/srv/tgent/app/"
     unit_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" not in argv)
     assert unit_sync[-1] == "beep:.config/systemd/user/tgent-remote-agent.service"

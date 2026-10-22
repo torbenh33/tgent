@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 import remote_agent_adapter as adapter_module
+from agent_sandbox import RuntimeManifest, RuntimeMount, SandboxRuntimeLayout, write_runtime_manifest
 from agent_snapshot import SnapshotError, create_project_snapshot
 from remote_agent_adapter import RemoteAgentAdapter
 from remote_agent_config import RemoteAgentConfig
@@ -63,6 +64,26 @@ def _snapshot_or_skip(checkout: Path, destination: Path):
         if "reflink" in str(err).lower() or "operation not supported" in str(err).lower():
             pytest.skip(f"Filesystem does not support snapshot copies: {err}")
         raise
+
+def _write_test_runtime(config: RemoteAgentConfig, version: str) -> None:
+    from datetime import datetime, timezone
+
+    from agent_sandbox import RuntimeManifest, RuntimeMount, SandboxRuntimeLayout, write_runtime_manifest
+
+    version_root = Path(str(config.runtime_dir / "versions" / version))
+    python_mount = version_root / "mounts" / "mount-000"
+    (python_mount / "bin").mkdir(parents=True)
+    (python_mount / "bin" / "python").write_text("test python", encoding="utf-8")
+    write_runtime_manifest(
+        version_root / "manifest.json",
+        RuntimeManifest(
+            version=version,
+            rsync_completed_at=datetime.now(timezone.utc),
+            layout=SandboxRuntimeLayout(
+                (RuntimeMount(python_mount, Path("/opt/runtime-python")),)
+            ),
+        ),
+    )
 
 
 def test_protocol_uploads_create_isolated_snapshots_concurrently(tmp_path: Path) -> None:
@@ -229,26 +250,15 @@ def test_adapter_upload_protocol_and_git_snapshot_end_to_end(tmp_path: Path, mon
 
 def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypatch, request) -> None:
     """Exercise service start/status/logs/stop/reap using only local resources."""
-    from datetime import datetime, timezone
     from pathlib import PurePosixPath
 
-    from agent_sandbox import RuntimeManifest, SandboxRuntimeLayout, write_runtime_manifest
     from remote_agent_config import RemoteAgentConfig
     from remote_agent_service import RemoteAgentService
 
     remote_base = Path(tempfile.mkdtemp(prefix="tgent-", dir="/tmp"))
     request.addfinalizer(lambda: shutil.rmtree(remote_base, ignore_errors=True))
     config = RemoteAgentConfig("local-test", PurePosixPath(str(remote_base)))
-    version_root = Path(str(config.runtime_dir / "versions" / "runtime-1"))
-    version_root.mkdir(parents=True)
-    write_runtime_manifest(
-        version_root / "manifest.json",
-        RuntimeManifest(
-            version="runtime-1",
-            rsync_completed_at=datetime.now(timezone.utc),
-            layout=SandboxRuntimeLayout(()),
-        ),
-    )
+    _write_test_runtime(config, "runtime-1")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -262,6 +272,9 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
 
     project = _project(tmp_path / "source", "uploaded project\n")
     service = RemoteAgentService(config)
+    assert service.controller.worker_command == (
+        "/opt/runtime-python/bin/python", "-m", "agent_worker"
+    )
     startup_errors: list[Exception] = []
     original_start_agent = service.controller.start_agent
 
@@ -311,16 +324,7 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
 
             # A later runtime publication must not change the service's selected
             # runtime or the version recorded for this agent.
-            newer_root = Path(str(config.runtime_dir / "versions" / "runtime-2"))
-            newer_root.mkdir(parents=True)
-            write_runtime_manifest(
-                newer_root / "manifest.json",
-                RuntimeManifest(
-                    version="runtime-2",
-                    rsync_completed_at=datetime.now(timezone.utc),
-                    layout=SandboxRuntimeLayout(()),
-                ),
-            )
+            _write_test_runtime(config, "runtime-2")
             status = await service._dispatch({
                 "schema_version": 1,
                 "operation": "status",
@@ -371,26 +375,15 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
 
 def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, request) -> None:
     """Export a commit patch through the service and retrieve it through the adapter."""
-    from datetime import datetime, timezone
     from pathlib import PurePosixPath
 
-    from agent_sandbox import RuntimeManifest, SandboxRuntimeLayout, write_runtime_manifest
     from remote_agent_config import RemoteAgentConfig
     from remote_agent_service import RemoteAgentService
 
     remote_base = Path(tempfile.mkdtemp(prefix="tgent-patch-", dir="/tmp"))
     request.addfinalizer(lambda: shutil.rmtree(remote_base, ignore_errors=True))
     config = RemoteAgentConfig("beep", PurePosixPath(str(remote_base)))
-    version_root = Path(str(config.runtime_dir / "versions" / "runtime-1"))
-    version_root.mkdir(parents=True)
-    write_runtime_manifest(
-        version_root / "manifest.json",
-        RuntimeManifest(
-            version="runtime-1",
-            rsync_completed_at=datetime.now(timezone.utc),
-            layout=SandboxRuntimeLayout(()),
-        ),
-    )
+    _write_test_runtime(config, "runtime-1")
     service = RemoteAgentService(config)
 
     project = _project(tmp_path / "patch-project", "before patch\n")

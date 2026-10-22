@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import importlib
 import inspect
 import json
@@ -66,6 +67,23 @@ def _selected_runtime(config: RemoteAgentConfig) -> RuntimeManifest:
     raise SandboxError(f"No complete prepared runtime under {versions_root}")
 
 
+def _runtime_worker_command(manifest: RuntimeManifest) -> tuple[str, ...]:
+    """Return the Python command at the selected runtime's sandbox target."""
+    system_targets = {Path("/usr"), Path("/lib"), Path("/lib64"), Path("/bin"), Path("/sbin")}
+    candidates = [
+        mount for mount in manifest.layout.mounts
+        if Path(mount.target) not in system_targets
+    ]
+    for executable in (Path("bin/python"), Path("bin/python3")):
+        for mount in candidates:
+            source = Path(mount.source)
+            if source.is_dir() and (source / executable).is_file():
+                return (str(Path(mount.target) / executable), "-m", "agent_worker")
+    raise SandboxError(
+        f"Runtime {manifest.version} has no mounted bin/python or bin/python3 executable"
+    )
+
+
 class RemoteAgentService:
     """Long-lived controller process; SSH invocations only proxy requests."""
 
@@ -91,6 +109,7 @@ class RemoteAgentService:
             patch_submit_callback=self._submit_patch,
             runtime_layout=self.runtime_manifest.layout,
             runtime_version=self.runtime_manifest.version,
+            worker_command=_runtime_worker_command(self.runtime_manifest),
             max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "100")),
             max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "3600")),
         )
@@ -109,6 +128,45 @@ class RemoteAgentService:
         )
         self.socket_path = Path(str(config.state_dir)) / "remote-agent.sock"
         self.server: asyncio.AbstractServer | None = None
+        self._service_lock_fd: int | None = None
+
+    def _acquire_service_lock_and_clear_stale_socket(self) -> None:
+        """Lock service ownership and remove only a stale Unix socket."""
+        lock_path = self.socket_path.with_suffix(".lock")
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise RuntimeError("Service lock must be a regular file owned by this user")
+            os.fchmod(descriptor, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as err:
+                raise RuntimeError("Remote agent service is already running") from err
+
+            try:
+                socket_info = self.socket_path.lstat()
+            except FileNotFoundError:
+                socket_info = None
+            if socket_info is not None:
+                if not stat.S_ISSOCK(socket_info.st_mode):
+                    raise RuntimeError(f"Refusing to replace non-socket service path: {self.socket_path}")
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.settimeout(0.2)
+                    try:
+                        probe.connect(os.fspath(self.socket_path))
+                    except (ConnectionRefusedError, FileNotFoundError):
+                        self.socket_path.unlink()
+                    else:
+                        raise RuntimeError(f"Service socket is active: {self.socket_path}")
+            self._service_lock_fd = descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
 
     async def _model_callback(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._llm is None:
@@ -255,12 +313,7 @@ class RemoteAgentService:
         info = parent.stat()
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
             raise RuntimeError("Service socket directory must be private and owned by this user")
-        try:
-            existing = self.socket_path.lstat()
-        except FileNotFoundError:
-            existing = None
-        if existing is not None:
-            raise RuntimeError(f"Refusing to replace existing service socket path: {self.socket_path}")
+        self._acquire_service_lock_and_clear_stale_socket()
         self.server = await asyncio.start_unix_server(
             self._client_connected,
             path=os.fspath(self.socket_path),
@@ -274,6 +327,9 @@ class RemoteAgentService:
             self.server.close()
             await self.server.wait_closed()
             self.socket_path.unlink(missing_ok=True)
+            if self._service_lock_fd is not None:
+                os.close(self._service_lock_fd)
+                self._service_lock_fd = None
 
 
 def proxy_stdio(socket_path: Path) -> int:
@@ -307,7 +363,11 @@ def proxy_stdio(socket_path: Path) -> int:
             raise RemoteProtocolError("Remote service returned invalid response framing")
         sys.stdout.buffer.write(response)
     except (OSError, TimeoutError, RemoteProtocolError) as err:
-        sys.stdout.buffer.write(_json_line(error_response(None, err)))
+        diagnostic = (
+            err if isinstance(err, RemoteProtocolError)
+            else RemoteProtocolError(f"Remote service socket request failed: {type(err).__name__}: {err}")
+        )
+        sys.stdout.buffer.write(_json_line(error_response(None, diagnostic)))
     sys.stdout.buffer.flush()
     return 0
 

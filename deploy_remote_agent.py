@@ -1,9 +1,8 @@
 """Deploy the remote agent application and user systemd unit to Beep.
 
 The deployment configuration is read locally from
-``~/.config/tgent/remote-agent.toml``. The remote Python environment must
-already exist at ``<remote_base_dir>/app/.venv``; this command preserves it.
-The command synchronizes the application, publishes a versioned sandbox
+``~/.config/tgent/remote-agent.toml``. This command synchronizes the app and
+its ``.venv`` to ``<remote_base_dir>/app``, publishes a versioned sandbox
 runtime, renders and installs the user service unit, and enables the service.
 """
 
@@ -27,7 +26,6 @@ _UNIT_NAME = "tgent-remote-agent.service"
 _UNIT_TEMPLATE = Path(__file__).parent / "deploy" / "remote-agent" / "remote-agent.service.in"
 _RSYNC_EXCLUDES = (
     ".git/",
-    ".venv/",
     "venv/",
     "__pycache__/",
     ".pytest_cache/",
@@ -48,11 +46,16 @@ _RSYNC_EXCLUDES = (
     "secrets/",
 )
 
-
 def _systemd_quote(value: str) -> str:
-    """Quote one systemd setting value, escaping quotes and specifiers."""
+    """Quote one systemd ExecStart argument, escaping quotes and specifiers."""
     escaped = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _systemd_setting_escape(value: str) -> str:
+    """Escape a value for a non-command systemd setting without adding quotes."""
+    escaped = value.replace("\\", "\\\\").replace("%", "%%")
+    return escaped.replace(" ", "\\x20").replace("\t", "\\x09")
 
 
 def _render_unit(config) -> str:
@@ -72,7 +75,7 @@ def _render_unit(config) -> str:
             _systemd_quote(str(config.remote_base_dir)),
         )
     )
-    rendered = template.replace("@APP_DIR@", _systemd_quote(app_dir))
+    rendered = template.replace("@APP_DIR@", _systemd_setting_escape(app_dir))
     rendered = rendered.replace("@PYTHON@", command)
     if "@APP_DIR@" in rendered or "@PYTHON@" in rendered:
         raise RuntimeError("Systemd unit template contains an unknown or unresolved placeholder")

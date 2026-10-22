@@ -111,7 +111,8 @@ def test_client_uses_fixed_ssh_command_and_checks_response(monkeypatch) -> None:
     assert argv == (
         "ssh",
         "beep",
-        "python3 -m remote_agent_service --base-dir /srv/tgent --stdio-v1",
+        "cd /srv/tgent/app && /srv/tgent/app/.venv/bin/python "
+        "-m remote_agent_service --base-dir /srv/tgent --stdio-v1",
     )
     assert kwargs["input"].endswith(bytes((10,)))
     assert json.loads(kwargs["input"]) == _request()
@@ -138,6 +139,20 @@ def test_client_rejects_oversized_request_before_ssh(monkeypatch) -> None:
     with pytest.raises(RemoteProtocolError, match="size limit"):
         client.request(request)
     assert not called
+
+
+def test_client_reports_bounded_ssh_stderr_on_failure(monkeypatch) -> None:
+    stderr = b"ssh: connect to host beep port 22: Connection refused"
+    monkeypatch.setattr(
+        "remote_agent_protocol.subprocess.run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 255, stdout=b"", stderr=stderr
+        ),
+    )
+    client = RemoteAgentClient(RemoteAgentConfig("beep", "/srv/tgent"))
+
+    with pytest.raises(RemoteProtocolError, match="Connection refused"):
+        client.request(_request())
 
 
 def test_client_rejects_mismatched_response_id(monkeypatch) -> None:
