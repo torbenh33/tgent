@@ -167,6 +167,8 @@ class AgentController:
         self._runtimes: dict[str, _AgentRuntime] = {}
         # Dynamic project MCP tools are opt-in and controlled only by this controller.
         self._tool_allowlists: dict[str, set[str]] = {}
+        self._tool_catalogs: dict[str, list[dict[str, Any]]] = {}
+        self.default_tool_modules = [name.strip() for name in os.environ.get("TGIT_AGENT_DEFAULT_TOOLS", "").split(",") if name.strip()]
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -235,6 +237,9 @@ class AgentController:
             else load_project_config(selected_project_root)
         )
         agent_id = secrets.token_hex(16)
+        present_modules = {path.stem for path in Path(selected_project_root).glob("mcp_*.py") if path.is_file() and not path.is_symlink() and re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem)}
+        seeded = set(self.default_tool_modules) & present_modules
+        self._tool_allowlists[agent_id] = seeded
         destination = self.snapshot_root / agent_id
         state = "starting"
         snapshot: ProjectSnapshot | None = None
@@ -284,6 +289,7 @@ class AgentController:
                 "patch.submit": self._handler(agent_id, self._submit_patch),
                 "agent.await_command": self._handler(agent_id, self._await_command),
                 "agent.tools.get": self._handler(agent_id, self._get_tool_allowlist),
+                "agent.tools.report": self._handler(agent_id, self._report_tool_catalog),
             }
             ipc = AgentControlServer(socket_path, handlers)
             await ipc.start()
@@ -344,6 +350,8 @@ class AgentController:
                 except SnapshotError:
                     pass
             if created:
+                self._tool_allowlists.pop(agent_id, None)
+                self._tool_catalogs.pop(agent_id, None)
                 try:
                     self.store.remove(agent_id)
                 except AgentStoreError:
@@ -367,6 +375,26 @@ class AgentController:
     async def _get_tool_allowlist(self, agent_id: str, _params: dict[str, Any]) -> dict[str, Any]:
         return {"tools": sorted(self._tool_allowlists.get(agent_id, set()))}
 
+    async def _report_tool_catalog(self, agent_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        modules = params.get("modules")
+        if not isinstance(modules, list) or len(modules) > 256:
+            raise AgentControllerError("Invalid MCP catalog")
+        encoded = json.dumps(modules, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 512_000:
+            raise AgentControllerError("MCP catalog exceeds size limit")
+        valid = []
+        for entry in modules:
+            if not isinstance(entry, dict) or set(entry) != {"name", "items"} or not isinstance(entry["name"], str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", entry["name"]) is None or not isinstance(entry["items"], list):
+                raise AgentControllerError("Invalid MCP catalog entry")
+            valid.append(entry)
+        self._tool_catalogs[agent_id] = valid
+        return {"reported": len(valid)}
+
+    async def get_agent_tools(self, agent_id: str) -> dict[str, Any]:
+        metadata = self.store.get_metadata(agent_id)
+        enabled = self._tool_allowlists.get(agent_id, set())
+        return {"agent_id": agent_id, "modules": [{**item, "enabled": item["name"] in enabled} for item in self._tool_catalogs.get(agent_id, [])]}
+
     async def set_agent_tools(self, agent_id: str, tools: list[str]) -> dict[str, Any]:
         """Set opt-in MCP module names for a live agent (trusted operator API)."""
         if not isinstance(tools, list) or any(not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None for name in tools):
@@ -379,7 +407,7 @@ class AgentController:
         runtime = self._runtimes.get(agent_id)
         if runtime is None or runtime.process.returncode is not None:
             raise AgentControllerError("Tools can only be changed for a live agent")
-        available = {path.stem for path in Path(metadata["snapshot_project"]).glob("mcp_*.py")}
+        available = {path.stem for path in Path(metadata["snapshot_project"]).glob("mcp_*.py") if path.is_file() and not path.is_symlink() and re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem)}
         if not set(tools) <= available:
             raise AgentControllerError("Requested MCP module is not available in this agent project")
         self._tool_allowlists[agent_id] = set(tools)

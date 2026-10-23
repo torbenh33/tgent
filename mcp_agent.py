@@ -160,6 +160,15 @@ async def continue_agent(agent_id: str, messages: list[dict[str, Any]]) -> dict[
 
 
 @mcp.tool()
+async def get_agent_tools(agent_id: str) -> dict[str, Any]:
+    """List all discovered project MCP tools/resources and their enabled status."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.get_agent_tools, agent_id)
+    return await _controller().get_agent_tools(agent_id)
+
+
+@mcp.tool()
 async def set_agent_tools(agent_id: str, tools: list[str]) -> dict[str, Any]:
     """Enable project MCP modules for a live agent (operator-only controller tool).
 

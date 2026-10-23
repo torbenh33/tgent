@@ -344,11 +344,13 @@ class AgentWorker:
             for name in allowed_modules
         ):
             raise WorkerError("Controller returned invalid MCP tool allowlist")
+        self.dynamic_tools.clear()
+        self.available_tools = list(TOOLS)
+        catalog: list[dict[str, Any]] = []
         for path in sorted(self.root.glob("mcp_*.py")):
-            if path.stem not in allowed_modules:
+            if path.is_symlink() or not path.is_file() or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem) is None:
                 continue
-            if path.is_symlink() or not path.is_file():
-                continue
+            module_items: list[dict[str, Any]] = []
             module_name = f"_agent_discovered_{path.stem}"
             spec = importlib.util.spec_from_file_location(module_name, path)
             if spec is None or spec.loader is None:
@@ -380,6 +382,9 @@ class AgentWorker:
                     if public_name in self.dynamic_tools:
                         raise WorkerError(f"Duplicate discovered MCP tool name: {public_name}")
                     description = getattr(tool, "description", None) or f"MCP tool {name} from {path.name}"
+                    module_items.append({"name": name, "kind": "tool", "description": str(description)[:1000], "parameters": schema})
+                    if path.stem not in allowed_modules:
+                        continue
                     self.dynamic_tools[public_name] = (server, name, "tool", None, ())
                     self.available_tools.append({
                         "type": "function",
@@ -420,6 +425,9 @@ class AgentWorker:
                     "required": list(variables),
                     "additionalProperties": False,
                 }
+                module_items.append({"name": str(resource_name)[:256], "kind": "resource_template" if is_template else "resource", "uri": uri[:2048], "description": str(description)[:1000]})
+                if path.stem not in allowed_modules:
+                    continue
                 self.dynamic_tools[public_name] = (server, uri, "resource", uri, variables)
                 self.available_tools.append({
                     "type": "function",
@@ -429,6 +437,8 @@ class AgentWorker:
                         "parameters": parameters,
                     },
                 })
+            catalog.append({"name": path.stem, "items": module_items})
+        await self.client.request("agent.tools.report", {"modules": catalog})
 
     async def _call_discovered_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         server, target, kind, uri_template, variables = self.dynamic_tools[name]
@@ -556,6 +566,7 @@ class AgentWorker:
             if command.get("command") == "shutdown":
                 return False
             if command.get("command") in {"continue", "review_feedback"}:
+                await self._discover_mcp_tools()
                 fresh = await self.client.request("history.get", {})
                 updated = fresh.get("history") if isinstance(fresh, dict) else None
                 if not isinstance(updated, list):
