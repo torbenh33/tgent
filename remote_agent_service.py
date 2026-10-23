@@ -170,7 +170,7 @@ class RemoteAgentService:
 
     def _get_llm(self) -> LLMClient:
         if self._llm is None:
-            self._llm = LLMClient(os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.ini"))
+            self._llm = LLMClient(os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.toml"))
         return self._llm
 
     async def _submit_patch(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:

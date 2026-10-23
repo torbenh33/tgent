@@ -26,7 +26,7 @@ _STATE_ROOT = Path(
 _SNAPSHOT_ROOT = Path(
     os.environ.get("TGIT_AGENT_SNAPSHOT_DIR") or _PROJECT_ROOT.parent / ".agent-snapshots"
 ).expanduser()
-_LLM_CONFIG = os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.ini")
+_LLM_CONFIG = os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.toml")
 _CONTROLLER: AgentController | None = None
 _LLM: LLMClient | None = None
 _REMOTE_ADAPTER: RemoteAgentAdapter | None = None
