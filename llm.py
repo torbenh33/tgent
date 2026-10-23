@@ -1,7 +1,10 @@
 
-from openai import OpenAI
+import asyncio
 import configparser
 import os
+from typing import Any
+
+from openai import OpenAI
 
 class LLMClient:
     def __init__(self, config_file='config.ini'):
@@ -21,7 +24,22 @@ class LLMClient:
         self.client = OpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
+            timeout=1800,
         )
+
+    async def model_callback(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create an OpenAI-compatible model response for an agent request."""
+        allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop"}
+        unknown = set(params) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
+        request = dict(params)
+        request["model"] = self.model
+        request["reasoning_effort"] = "none"
+        response = await asyncio.to_thread(self.client.chat.completions.create, **request)
+        if not hasattr(response, "model_dump"):
+            raise RuntimeError("OpenAI-compatible client returned an unsupported completion object")
+        return response.model_dump(mode="json")
 
     def chat(self, messages):
         """

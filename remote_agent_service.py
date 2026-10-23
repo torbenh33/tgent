@@ -105,13 +105,13 @@ class RemoteAgentService:
             project_root=None,
             state_root=str(config.state_dir),
             snapshot_root=str(config.snapshots_dir),
-            model_callback=self._model_callback,
+            model_callback=self._get_llm().model_callback,
             patch_submit_callback=self._submit_patch,
             runtime_layout=self.runtime_manifest.layout,
             runtime_version=self.runtime_manifest.version,
             worker_command=_runtime_worker_command(self.runtime_manifest),
-            max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "100")),
-            max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "3600")),
+            max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
+            max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
         self.handlers = build_async_operation_handlers(
             self.uploads,
@@ -168,19 +168,10 @@ class RemoteAgentService:
             os.close(descriptor)
             raise
 
-    async def _model_callback(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _get_llm(self) -> LLMClient:
         if self._llm is None:
             self._llm = LLMClient(os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.ini"))
-        allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop"}
-        unknown = set(params) - allowed
-        if unknown:
-            raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
-        request = dict(params)
-        request["model"] = self._llm.model
-        response = await asyncio.to_thread(self._llm.client.chat.completions.create, **request)
-        if not hasattr(response, "model_dump"):
-            raise RuntimeError("OpenAI-compatible client returned an unsupported completion object")
-        return response.model_dump(mode="json")
+        return self._llm
 
     async def _submit_patch(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:
         module = importlib.import_module("mcp_tgit_review")

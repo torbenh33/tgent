@@ -39,19 +39,6 @@ def _get_llm() -> LLMClient:
     return _LLM
 
 
-async def _model_callback(params: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop"}
-    unknown = set(params) - allowed
-    if unknown:
-        raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
-    request = dict(params)
-    request["model"] = _get_llm().model
-    response = await asyncio.to_thread(_get_llm().client.chat.completions.create, **request)
-    if not hasattr(response, "model_dump"):
-        raise RuntimeError("OpenAI-compatible client returned an unsupported completion object")
-    return response.model_dump(mode="json")
-
-
 async def _submit_patch(snapshot: Any, params: dict[str, Any]) -> dict[str, Any]:
     """Use the existing review MCP implementation to export snapshot commits."""
     module = importlib.import_module("mcp_tgit_review")
@@ -85,11 +72,11 @@ def _controller() -> AgentController:
             project_root=_PROJECT_ROOT,
             state_root=_STATE_ROOT,
             snapshot_root=_SNAPSHOT_ROOT,
-            model_callback=_model_callback,
+            model_callback=_get_llm().model_callback,
             patch_submit_callback=_submit_patch,
             sandbox_policy=SandboxPolicy(),
-            max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "100")),
-            max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "3600")),
+            max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
+            max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
     return _CONTROLLER
 
@@ -99,7 +86,7 @@ async def start_agent(request: dict[str, Any]) -> dict[str, Any]:
     """Start an isolated agent for the controller's current Git project.
 
     Request schema: {"schema_version": 1, "task": "...", "history": [],
-    "limits": {"max_model_calls": 40, "max_runtime_seconds": 3600}}.
+    "limits": {"max_model_calls": 200, "max_runtime_seconds": 43200}}.
     The project root is the directory from which this MCP server was launched.
     """
     remote = _remote_adapter()
