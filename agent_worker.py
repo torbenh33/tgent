@@ -337,7 +337,16 @@ class AgentWorker:
         Modules are imported only from this checkout's top level. Their server
         functions execute in the worker sandbox, not through controller RPC.
         """
+        response = await self.client.request("agent.tools.get", {})
+        allowed_modules = response.get("tools", []) if isinstance(response, dict) else []
+        if not isinstance(allowed_modules, list) or any(
+            not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None
+            for name in allowed_modules
+        ):
+            raise WorkerError("Controller returned invalid MCP tool allowlist")
         for path in sorted(self.root.glob("mcp_*.py")):
+            if path.stem not in allowed_modules:
+                continue
             if path.is_symlink() or not path.is_file():
                 continue
             module_name = f"_agent_discovered_{path.stem}"

@@ -67,6 +67,43 @@ def test_rejects_invalid_start_requests(start_request: object, message: str) -> 
         AgentController._validate_start_request(start_request)
 
 
+@pytest.mark.asyncio
+async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "mcp_example.py").write_text("mcp = object()\n", encoding="utf-8")
+
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"state": "running", "snapshot_project": str(project)}
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._tool_allowlists = {}
+
+    assert await controller._get_tool_allowlist("agent", {}) == {"tools": []}
+    assert await controller.set_agent_tools("agent", ["mcp_example"]) == {
+        "agent_id": "agent", "tools": ["mcp_example"]
+    }
+    assert await controller._get_tool_allowlist("agent", {}) == {"tools": ["mcp_example"]}
+    for tools in (["mcp_agent"], ["mcp_missing"], ["../mcp_example"], ["mcp_example", "mcp_example"]):
+        with pytest.raises(AgentControllerError):
+            await controller.set_agent_tools("agent", tools)
+
+
+@pytest.mark.asyncio
+async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"state": "stopped", "snapshot_project": str(tmp_path)}
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._tool_allowlists = {}
+    with pytest.raises(AgentControllerError, match="live agent"):
+        await controller.set_agent_tools("agent", [])
+
+
 def test_start_request_rejects_non_message_history_entries() -> None:
     with pytest.raises(AgentControllerError, match="message objects"):
         AgentController._validate_start_request(

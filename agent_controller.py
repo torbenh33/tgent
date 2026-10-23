@@ -165,6 +165,8 @@ class AgentController:
         self.max_model_calls = max(1, int(max_model_calls))
         self.max_runtime_seconds = max(1, int(max_runtime_seconds))
         self._runtimes: dict[str, _AgentRuntime] = {}
+        # Dynamic project MCP tools are opt-in and controlled only by this controller.
+        self._tool_allowlists: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -274,6 +276,7 @@ class AgentController:
                 "agent.update_state": self._handler(agent_id, self._update_state),
                 "patch.submit": self._handler(agent_id, self._submit_patch),
                 "agent.await_command": self._handler(agent_id, self._await_command),
+                "agent.tools.get": self._handler(agent_id, self._get_tool_allowlist),
             }
             ipc = AgentControlServer(socket_path, handlers)
             await ipc.start()
@@ -353,6 +356,25 @@ class AgentController:
                         break
             return await callback(agent_id, params)
         return dispatch
+
+    async def _get_tool_allowlist(self, agent_id: str, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"tools": sorted(self._tool_allowlists.get(agent_id, set()))}
+
+    async def set_agent_tools(self, agent_id: str, tools: list[str]) -> dict[str, Any]:
+        """Set opt-in MCP module names for a live agent (trusted operator API)."""
+        if not isinstance(tools, list) or any(not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None for name in tools):
+            raise AgentControllerError("tools must be MCP module names such as mcp_example")
+        if len(set(tools)) != len(tools):
+            raise AgentControllerError("tools must not contain duplicates")
+        metadata = self.store.get_metadata(agent_id)
+        runtime = self._runtimes.get(agent_id)
+        if metadata.get("state") not in {"running", "halted", "awaiting_review", "review_received"} or runtime is None or runtime.process.returncode is not None:
+            raise AgentControllerError("Tools can only be changed for a live agent")
+        available = {path.stem for path in Path(metadata["snapshot_project"]).glob("mcp_*.py")}
+        if not set(tools) <= available:
+            raise AgentControllerError("Requested MCP module is not available in this agent project")
+        self._tool_allowlists[agent_id] = set(tools)
+        return {"agent_id": agent_id, "tools": sorted(tools)}
 
     async def _hello(self, agent_id: str, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("agent_id") != agent_id or params.get("protocol_version") != 1:
