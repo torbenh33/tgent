@@ -329,6 +329,37 @@ async def git_status_context() -> dict:
     }
 
 @mcp.tool()
+def apply_agent_patch(patch_path: str, repo_path: str = ".") -> dict[str, Any]:
+    """Apply a patch artifact as commits with git am -3. Requires a clean repository; patch_path must name an existing patch file."""
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        return {"status": "error", "message": "repo_path must be provided."}
+    if not isinstance(patch_path, str) or not patch_path.strip():
+        return {"status": "error", "message": "patch_path must be provided."}
+
+    target_repo = _resolve_repo_path(repo_path)
+    if not os.path.isfile(patch_path):
+        return {"status": "error", "message": "Patch file does not exist or is not a regular file.", "patch_path": patch_path}
+
+    status_proc = _git_command(target_repo, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if status_proc.returncode != 0:
+        return {"status": "error", "message": "Failed to inspect repository status.", "stderr": status_proc.stderr, "repo_path": target_repo}
+    if status_proc.stdout.strip():
+        return {"status": "error", "message": "Repository must be clean before applying a patch.", "repo_path": target_repo}
+
+    proc = _git_command(target_repo, ["am", "-3", os.path.abspath(patch_path)])
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": "Failed to apply patch with git am -3. The repository may be in an am session; use git am --abort to recover.",
+            "stderr": proc.stderr,
+            "stdout": proc.stdout,
+            "repo_path": target_repo,
+            "patch_path": patch_path,
+        }
+    return {"status": "ok", "repo_path": target_repo, "patch_path": patch_path, "stdout": proc.stdout}
+
+
+@mcp.tool()
 def stage_lines(
     path: str,
     old_line_numbers: list[int],
