@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents", "set_tools"})
 
 
 class RemoteProtocolError(ValueError):
@@ -62,6 +62,7 @@ def validate_request(value: object) -> dict[str, object]:
         "reap": common | {"agent_id"},
         "patches": common | {"agent_id"},
         "list_agents": common,
+        "set_tools": common | {"agent_id", "tools"},
     }
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")
@@ -74,7 +75,17 @@ def validate_request(value: object) -> dict[str, object]:
             raise RemoteProtocolError("start request payload must be an object")
     elif operation != "list_agents":
         _validate_id(value.get("agent_id"), "agent_id")
-        if operation == "history":
+        if operation == "set_tools":
+            tools = value.get("tools")
+            import re
+            if (
+                not isinstance(tools, list)
+                or len(tools) > 256
+                or any(not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None for name in tools)
+                or len(set(tools)) != len(tools)
+            ):
+                raise RemoteProtocolError("tools must be unique MCP module names")
+        elif operation == "history":
             _bounded_int(value.get("limit"), "limit", 1, 10_000)
         elif operation == "logs":
             _bounded_int(value.get("max_bytes"), "max_bytes", 1, 1_048_576)

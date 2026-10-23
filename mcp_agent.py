@@ -149,7 +149,7 @@ async def set_agent_tools(agent_id: str, tools: list[str]) -> dict[str, Any]:
     """
     remote = _remote_adapter()
     if remote is not None:
-        raise RuntimeError("Tool allowlist management is available only on the local controller")
+        return await asyncio.to_thread(remote.set_agent_tools, agent_id, tools)
     return await _controller().set_agent_tools(agent_id, tools)
 
 

@@ -34,7 +34,7 @@ def build_operation_handlers(
         "start": uploads.start_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents"}:
+        if operation not in {"status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents", "set_tools"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")
@@ -53,7 +53,7 @@ def build_async_operation_handlers(
         "start": uploads.start_async_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents"}:
+        if operation not in {"status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents", "set_tools"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")

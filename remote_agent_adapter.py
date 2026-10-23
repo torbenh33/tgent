@@ -111,6 +111,10 @@ class RemoteAgentAdapter:
         """Append operator or review messages and resume a live remote agent."""
         return self._request("continue", agent_id=agent_id, messages=messages)
 
+    def set_agent_tools(self, agent_id: str, tools: list[str]) -> dict[str, object]:
+        """Set the remote controller's explicit MCP tool allowlist."""
+        return self._request("set_tools", agent_id=agent_id, tools=tools)
+
     def stop(self, agent_id: str) -> dict[str, object]:
         """Stop a remote agent and wait for its worker to exit."""
         return self._request("stop", agent_id=agent_id)

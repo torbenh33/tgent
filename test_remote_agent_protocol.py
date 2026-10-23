@@ -36,6 +36,20 @@ def test_validates_allowlisted_operations_and_rejects_extra_fields() -> None:
         validate_request(_request(command="id"))
 
 
+def test_validates_set_tools_operation_and_rejects_invalid_tool_lists() -> None:
+    request = {
+        "schema_version": 1,
+        "operation": "set_tools",
+        "request_id": "req-1",
+        "agent_id": "agent-1",
+        "tools": ["mcp_example"],
+    }
+    assert validate_request(request) == request
+    for tools in (["../bad"], ["mcp_a", "mcp_a"], "mcp_a", [1]):
+        with pytest.raises(RemoteProtocolError, match="MCP module"):
+            validate_request({**request, "tools": tools})
+
+
 def test_validates_prepare_upload_operation() -> None:
     request = {
         "schema_version": 1,
