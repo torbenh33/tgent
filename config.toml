@@ -1,0 +1,5 @@
+[settings]
+base_url = "http://beep:11434/v1"
+api_key = "ollama"
+model = "ggml-org/gemma-4-E2B-it-GGUF"
+api = "chat.completions"
