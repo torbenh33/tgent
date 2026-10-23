@@ -123,8 +123,8 @@ class AgentController:
         runtime_layout: SandboxRuntimeLayout | None = None,
         runtime_version: str | None = None,
         bwrap: str = "bwrap",
-        max_model_calls: int = 100,
-        max_runtime_seconds: int = 3600,
+        max_model_calls: int = 200,
+        max_runtime_seconds: int = 43200,
     ) -> None:
         self.project_root = None if project_root is None else discover_project_root(project_root)
         self.project_config: ProjectConfig | None = (
@@ -196,8 +196,8 @@ class AgentController:
         limits = request.get("limits", {})
         if not isinstance(limits, dict) or set(limits) - {"max_model_calls", "max_runtime_seconds"}:
             raise AgentControllerError("limits must contain only max_model_calls and max_runtime_seconds")
-        calls = limits.get("max_model_calls", 40)
-        runtime = limits.get("max_runtime_seconds", 3600)
+        calls = limits.get("max_model_calls", 200)
+        runtime = limits.get("max_runtime_seconds", 43200)
         if type(calls) is not int or calls < 1 or type(runtime) is not int or runtime < 1:
             raise AgentControllerError("requested limits must be positive integers")
         return history, calls, runtime
