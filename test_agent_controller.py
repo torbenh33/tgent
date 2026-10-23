@@ -18,8 +18,8 @@ def test_start_request_seeds_copilotchat_user_message() -> None:
     assert history[0]["role"] == "user"
     assert history[0]["content"] == "Fix the failing test."
     assert isinstance(history[0]["id"], str)
-    assert max_calls == 40
-    assert max_runtime == 3600
+    assert max_calls == 200
+    assert max_runtime == 43200
 
 
 def test_start_request_preserves_supplied_history_and_fields() -> None:
