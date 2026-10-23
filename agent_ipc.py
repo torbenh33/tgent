@@ -19,7 +19,7 @@ from typing import Any
 
 JSONRPC_VERSION = "2.0"
 DEFAULT_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
-DEFAULT_REQUEST_TIMEOUT_SECONDS = 300
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 7200
 
 JsonObject = dict[str, Any]
 RpcHandler = Callable[[JsonObject], Any | Awaitable[Any]]
