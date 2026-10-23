@@ -67,7 +67,7 @@ def test_rejects_invalid_start_requests(start_request: object, message: str) -> 
         AgentController._validate_start_request(start_request)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -80,6 +80,9 @@ async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_pat
     controller = AgentController.__new__(AgentController)
     controller.store = Store()
     controller._tool_allowlists = {}
+    controller._runtimes = {
+        "agent": type("Runtime", (), {"process": type("Process", (), {"returncode": None})()})()
+    }
 
     assert await controller._get_tool_allowlist("agent", {}) == {"tools": []}
     assert await controller.set_agent_tools("agent", ["mcp_example"]) == {
@@ -91,7 +94,7 @@ async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_pat
             await controller.set_agent_tools("agent", tools)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):

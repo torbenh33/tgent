@@ -367,8 +367,10 @@ class AgentController:
         if len(set(tools)) != len(tools):
             raise AgentControllerError("tools must not contain duplicates")
         metadata = self.store.get_metadata(agent_id)
+        if metadata.get("state") not in {"running", "halted", "awaiting_review", "review_received"}:
+            raise AgentControllerError("Tools can only be changed for a live agent")
         runtime = self._runtimes.get(agent_id)
-        if metadata.get("state") not in {"running", "halted", "awaiting_review", "review_received"} or runtime is None or runtime.process.returncode is not None:
+        if runtime is None or runtime.process.returncode is not None:
             raise AgentControllerError("Tools can only be changed for a live agent")
         available = {path.stem for path in Path(metadata["snapshot_project"]).glob("mcp_*.py")}
         if not set(tools) <= available:
