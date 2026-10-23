@@ -337,7 +337,8 @@ class AgentWorker:
         Modules are imported only from this checkout's top level. Their server
         functions execute in the worker sandbox, not through controller RPC.
         """
-        allowed_modules: list[str] = []
+        response = await self.client.request("agent.tools.get", {})
+        allowed_modules = response.get("tools", []) if isinstance(response, dict) else []
         if not isinstance(allowed_modules, list) or any(
             not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None
             for name in allowed_modules

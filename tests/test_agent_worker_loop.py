@@ -23,6 +23,8 @@ class FakeWorkerClient:
         self.awaited_commands: list[dict[str, Any]] = []
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "agent.tools.get":
+            return {"tools": []}
         if method == "worker.hello":
             return {"protocol_version": 1, "agent_id": params["agent_id"]}
         if method == "history.get":
@@ -107,6 +109,8 @@ class _ControllerWorkerBridge:
         self.states: list[dict[str, Any]] = []
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "agent.tools.get":
+            return {"tools": []}
         if method == "worker.hello":
             return await self.controller._hello("test-agent", params)
         if method == "history.get":
@@ -203,6 +207,8 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
             self.await_count = 0
 
         async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "agent.tools.get":
+                return {"tools": []}
             if method == "worker.hello":
                 return {"protocol_version": 1, "agent_id": params["agent_id"]}
             if method == "history.get":
@@ -260,26 +266,43 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
     assert client.history[-1]["content"] == "Review feedback addressed."
 
 
-def test_worker_lists_builtin_tools_without_rpc_discovery(tmp_path: Path) -> None:
-    class NoRPCClient:
-        async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-            raise AssertionError(f"Unexpected RPC: {method}")
+def test_worker_discovers_mcp_tools_through_allowlist_rpc(tmp_path: Path) -> None:
+    (tmp_path / "mcp_demo.py").write_text(
+        """
+from types import SimpleNamespace
 
-    worker = AgentWorker(client=NoRPCClient(), root=tmp_path, agent_id="agent")  # type: ignore[arg-type]
+class FakeMCP:
+    async def list_tools(self):
+        return [SimpleNamespace(name='echo', inputSchema={'type': 'object', 'properties': {'value': {'type': 'string'}}}, description='Echo input')]
+
+    async def call_tool(self, name, arguments):
+        return {'tool': name, 'arguments': arguments}
+
+mcp = FakeMCP()
+""",
+        encoding="utf-8",
+    )
+
+    class AllowlistClient:
+        def __init__(self) -> None:
+            self.methods: list[str] = []
+
+        async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            self.methods.append(method)
+            assert method == "agent.tools.get"
+            return {"tools": ["mcp_demo"]}
+
+    client = AllowlistClient()
+    worker = AgentWorker(client=client, root=tmp_path, agent_id="agent")  # type: ignore[arg-type]
 
     async def exercise() -> None:
         await worker._discover_mcp_tools()
+        assert client.methods == ["agent.tools.get"]
+        assert "mcp_demo__echo" in worker.dynamic_tools
         tool_names = {item["function"]["name"] for item in worker.available_tools}
-        assert tool_names == {
-            "read_file",
-            "edit_file",
-            "search_files",
-            "run_command",
-            "submit_patch_queue",
-        }
-        system_message = worker._api_messages([])[0]["content"]
-        assert "Available tools:" in system_message
-        for name in tool_names:
-            assert name in system_message
+        assert "mcp_demo__echo" in tool_names
+        assert "mcp_demo__echo" in worker._api_messages([])[0]["content"]
+        result = await worker._execute_tool("mcp_demo__echo", {"value": "hello"})
+        assert result == {"tool": "echo", "arguments": {"value": "hello"}}
 
     asyncio.run(exercise())
