@@ -95,6 +95,10 @@ class RemoteAgentAdapter:
         except RemoteProtocolError as err:
             raise RemoteAgentAdapterError(f"Remote start request failed: {err}") from err
 
+    def list_agents(self) -> list[dict[str, object]]:
+        """List all agents registered by the remote controller."""
+        return self._request("list_agents").get("agents", [])
+
     def status(self, agent_id: str) -> dict[str, object]:
         """Retrieve persisted remote agent status."""
         return self._request("status", agent_id=agent_id)

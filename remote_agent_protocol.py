@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents"})
 
 
 class RemoteProtocolError(ValueError):
@@ -61,6 +61,7 @@ def validate_request(value: object) -> dict[str, object]:
         "logs": common | {"agent_id", "max_bytes"},
         "reap": common | {"agent_id"},
         "patches": common | {"agent_id"},
+        "list_agents": common,
     }
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")
@@ -71,7 +72,7 @@ def validate_request(value: object) -> dict[str, object]:
         _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
-    else:
+    elif operation != "list_agents":
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "history":
             _bounded_int(value.get("limit"), "limit", 1, 10_000)

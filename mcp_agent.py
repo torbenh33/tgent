@@ -96,6 +96,15 @@ async def start_agent(request: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def list_remote_agents() -> list[dict[str, Any]]:
+    """List all agents managed by the local or remote controller."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.list_agents)
+    return await _controller().list_agents()
+
+
+@mcp.tool()
 async def get_agent_status(agent_id: str) -> dict[str, Any]:
     """Return persisted controller metadata for an agent."""
     remote = _remote_adapter()

@@ -489,6 +489,19 @@ class AgentController:
                 runtime.process.kill()
                 await runtime.process.wait()
 
+    async def list_agents(self) -> list[dict[str, Any]]:
+        """Return metadata for every safely readable agent record."""
+        agents = []
+        for entry in self.store.state_root.iterdir():
+            if entry.name == "logs" or entry.is_symlink() or not entry.is_dir():
+                continue
+            try:
+                agents.append(self.store.get_metadata(entry.name))
+            except (AgentStoreError, OSError):
+                continue
+        agents.sort(key=lambda metadata: (metadata.get("created_at", 0), metadata.get("agent_id", "")))
+        return agents
+
     async def get_status(self, agent_id: str) -> dict[str, Any]:
         return self.store.get_metadata(agent_id)
 

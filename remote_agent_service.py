@@ -124,6 +124,7 @@ class RemoteAgentService:
                 "logs": self._logs,
                 "reap": self._reap,
                 "patches": self._patches,
+                "list_agents": self._list_agents,
             },
         )
         self.socket_path = Path(str(config.state_dir)) / "remote-agent.sock"
@@ -236,6 +237,10 @@ class RemoteAgentService:
 
     async def _reap(self, request):
         return await self.controller.reap_agent(request["agent_id"])
+
+    async def _list_agents(self, request):
+        """Return metadata for all registered remote agents."""
+        return {"agents": await self.controller.list_agents()}
 
     async def _patches(self, request):
         agent_id = request["agent_id"]
