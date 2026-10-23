@@ -85,14 +85,32 @@ def _controller() -> AgentController:
 async def start_agent(request: dict[str, Any]) -> dict[str, Any]:
     """Start an isolated agent for the controller's current Git project.
 
-    Request schema: {"schema_version": 1, "task": "...", "history": [],
-    "limits": {"max_model_calls": 200, "max_runtime_seconds": 43200}}.
+    Request schema: {"schema_version": 1, "task": "...", "name": "optional label",
+    "history": [], "limits": {"max_model_calls": 200, "max_runtime_seconds": 43200}}.
     The project root is the directory from which this MCP server was launched.
     """
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.start, _PROJECT_ROOT, request)
     return await _controller().start_agent(request)
+
+
+@mcp.resource("agent://status")
+async def agent_status_default_resource() -> list[dict[str, Any]]:
+    """List agents with names and statuses for a quick operator overview."""
+    return await list_remote_agents()
+
+
+@mcp.resource("agent://status/{agent_id}")
+async def agent_status_resource(agent_id: str) -> dict[str, Any]:
+    """Convenient read-only resource for one agent's controller status."""
+    return await get_agent_status(agent_id)
+
+
+@mcp.resource("agents://")
+async def agents_resource() -> list[dict[str, Any]]:
+    """Convenient read-only resource listing agent names and lifecycle status."""
+    return await list_remote_agents()
 
 
 @mcp.tool()

@@ -107,6 +107,19 @@ async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
         await controller.set_agent_tools("agent", [])
 
 
+@pytest.mark.parametrize("name", ["", "  ", "x" * 101, "bad\\nname", 7])
+def test_start_request_rejects_invalid_name(name: object) -> None:
+    with pytest.raises(AgentControllerError, match="name"):
+        AgentController._validate_start_request({"schema_version": 1, "task": "task", "name": name})
+
+
+def test_start_request_accepts_bounded_human_name() -> None:
+    history, _calls, _runtime = AgentController._validate_start_request(
+        {"schema_version": 1, "task": "task", "name": "Investigate flaky tests"}
+    )
+    assert history[0]["content"] == "task"
+
+
 def test_start_request_rejects_non_message_history_entries() -> None:
     with pytest.raises(AgentControllerError, match="message objects"):
         AgentController._validate_start_request(

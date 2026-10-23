@@ -173,12 +173,18 @@ class AgentController:
     def _validate_start_request(request: Any) -> tuple[list[dict[str, Any]], int, int]:
         if not isinstance(request, dict):
             raise AgentControllerError("start request must be an object")
-        allowed = {"schema_version", "task", "history", "limits"}
+        allowed = {"schema_version", "task", "history", "limits", "name"}
         unknown = set(request) - allowed
         if unknown:
             raise AgentControllerError(f"Unknown start request field(s): {', '.join(sorted(unknown))}")
         if type(request.get("schema_version")) is not int or request["schema_version"] != 1:
             raise AgentControllerError("schema_version must be 1")
+        name = request.get("name")
+        if name is not None and (
+            not isinstance(name, str) or not name.strip() or len(name.strip()) > 100
+            or any(ord(character) < 32 for character in name)
+        ):
+            raise AgentControllerError("name must be a non-empty string of at most 100 characters without controls")
 
         task = request.get("task")
         if task is not None and (not isinstance(task, str) or not task.strip()):
@@ -247,6 +253,7 @@ class AgentController:
             metadata = {
                 "schema_version": 1,
                 "agent_id": agent_id,
+                "name": request.get("name", "").strip() or f"Agent {agent_id[:8]}",
                 "project_root": str(selected_project_root),
                 "state": state,
                 "created_at": time.time(),
