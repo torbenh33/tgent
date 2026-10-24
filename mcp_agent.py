@@ -220,7 +220,12 @@ async def stop_agent(agent_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def reap_agent(agent_id: str) -> dict[str, Any]:
-    """Remove a stopped agent's snapshot and controller state."""
+    """Remove an inactive stopped, failed, halted, or awaiting-review agent's snapshot and controller state.
+
+    Awaiting-review submissions remain in the separate patch-artifact store after
+    reaping; retain/import them before cleanup. Reaping does not imply application.
+    Live workers are never reaped.
+    """
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.reap, agent_id)

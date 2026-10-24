@@ -121,6 +121,55 @@ async def test_stop_inactive_awaiting_review_agent_makes_it_terminal() -> None:
 
 
 @pytest.mark.anyio
+async def test_reap_inactive_awaiting_review_preserves_submitted_artifact(tmp_path) -> None:
+    class Store:
+        def __init__(self):
+            self.metadata = {"agent_id": "agent", "state": "awaiting_review",
+                            "snapshot_root": str(snapshot), "submitted_head": "abc"}
+            self.removed = False
+
+        def get_metadata(self, _agent_id):
+            return dict(self.metadata)
+
+        def remove(self, _agent_id):
+            self.removed = True
+
+    snapshot = tmp_path / "snapshots" / "agent"
+    snapshot.mkdir(parents=True)
+    artifact = tmp_path / "patches" / "agent.patch"
+    artifact.parent.mkdir()
+    artifact.write_text("submitted", encoding="utf-8")
+    store = Store()
+    controller = AgentController.__new__(AgentController)
+    controller.store = store
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    with patch("agent_controller.remove_project_snapshot") as remove_snapshot:
+        assert await controller.reap_agent("agent") == {"agent_id": "agent", "state": "reaped"}
+    remove_snapshot.assert_called_once_with(snapshot)
+    assert store.removed
+    assert artifact.read_text(encoding="utf-8") == "submitted"
+
+
+@pytest.mark.anyio
+async def test_reap_rejects_live_awaiting_review_worker(tmp_path) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "agent", "state": "awaiting_review", "snapshot_root": str(snapshot)}
+
+    snapshot = tmp_path / "snapshots" / "agent"
+    snapshot.mkdir(parents=True)
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {"agent": type("Runtime", (), {"process": type("Process", (), {"returncode": None})()})()}
+    with patch("agent_controller.remove_project_snapshot") as remove_snapshot:
+        with pytest.raises(AgentControllerError, match="Worker process is still running"):
+            await controller.reap_agent("agent")
+    remove_snapshot.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):

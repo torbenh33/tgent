@@ -689,8 +689,8 @@ class AgentController:
 
     async def reap_agent(self, agent_id: str) -> dict[str, Any]:
         metadata = self.store.get_metadata(agent_id)
-        if metadata.get("state") not in {"stopped", "failed", "halted", "reaped"}:
-            raise AgentControllerError("Stop the agent before reaping it")
+        if metadata.get("state") not in {"stopped", "failed", "halted", "reaped", "awaiting_review"}:
+            raise AgentControllerError("Only inactive stopped, failed, halted, or awaiting-review agents can be reaped")
         runtime = self._runtimes.get(agent_id)
         if runtime is not None and runtime.process.returncode is None:
             raise AgentControllerError("Worker process is still running")
