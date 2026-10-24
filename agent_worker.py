@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
 import os
 import re
 import secrets
@@ -15,6 +16,8 @@ from typing import Any
 from urllib.parse import quote
 
 from agent_ipc import AgentIPCError, AgentWorkerClient
+
+logger = logging.getLogger(__name__)
 
 MAX_TOOL_RESULT_CHARS = 24_000
 MAX_FILE_READ_BYTES = 1_000_000
@@ -346,6 +349,7 @@ class AgentWorker:
             raise WorkerError("Controller returned invalid MCP tool allowlist")
         self.dynamic_tools.clear()
         self.available_tools = list(TOOLS)
+        logger.info("MCP discovery enabled modules: %s", ", ".join(allowed_modules) if allowed_modules else "none")
         catalog: list[dict[str, Any]] = []
         entry_points = importlib.metadata.entry_points()
         for entry_point in sorted(entry_points.select(group="tgit_agent.mcp_servers"), key=lambda ep: ep.name):
@@ -435,7 +439,13 @@ class AgentWorker:
                     },
                 })
             catalog.append({"name": module_name, "items": module_items})
-        await self.client.request("agent.tools.report", {"modules": catalog})
+        tool_names = [item["name"] for module in catalog for item in module["items"] if item.get("kind") == "tool"]
+        logger.info("MCP discovery completed: %d modules, tools: %s", len(catalog), ", ".join(tool_names) if tool_names else "none")
+        try:
+            await self.client.request("agent.tools.report", {"modules": catalog})
+        except Exception:
+            logger.exception("MCP catalog report failed (%d discovered modules)", len(catalog))
+            raise
 
     async def _call_discovered_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         server, target, kind, uri_template, variables = self.dynamic_tools[name]

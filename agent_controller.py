@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
 import os
 import re
 import secrets
@@ -88,6 +89,9 @@ def _configure_snapshot_git_identity(source_root: Path, snapshot_root: Path) -> 
         if result.returncode != 0:
             detail = result.stderr.strip() or f"git config failed with exit code {result.returncode}"
             raise AgentControllerError(f"Could not set snapshot Git {key}: {detail}")
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentControllerError(RuntimeError):
@@ -402,12 +406,17 @@ class AgentController:
                 raise AgentControllerError("Invalid MCP catalog entry")
             valid.append(entry)
         self._tool_catalogs[agent_id] = valid
+        summary = [f"{entry['name']}[{', '.join(str(item.get('name', '?')) for item in entry['items'] if isinstance(item, dict)) or 'no tools'}]" for entry in valid]
+        logger.info("Agent %s reported MCP catalog: %s", agent_id, "; ".join(summary) if summary else "empty catalog")
         return {"reported": len(valid)}
 
     async def get_agent_tools(self, agent_id: str) -> dict[str, Any]:
         metadata = self.store.get_metadata(agent_id)
         enabled = self._tool_allowlists.get(agent_id, set())
-        return {"agent_id": agent_id, "modules": [{**item, "enabled": item["name"] in enabled} for item in self._tool_catalogs.get(agent_id, [])]}
+        modules = [{**item, "enabled": item["name"] in enabled} for item in self._tool_catalogs.get(agent_id, [])]
+        summary = [f"{item['name']}={'enabled' if item['enabled'] else 'disabled'}" for item in modules]
+        logger.info("Agent %s MCP tool status: %s", agent_id, ", ".join(summary) if summary else "empty catalog (no discovered modules)")
+        return {"agent_id": agent_id, "modules": modules}
 
     async def set_agent_tools(self, agent_id: str, tools: list[str]) -> dict[str, Any]:
         """Set opt-in MCP module names for a live agent (trusted operator API)."""
