@@ -528,6 +528,33 @@ def list_review_series(repo_path: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_review_replies(repo_path: str = ".", unacknowledged_only: bool = False) -> dict[str, Any]:
+    """Return captured replies across all review series for one Git repository.
+
+    Reporting is read-only: it does not acknowledge replies or mark comments
+    resolved. Each reply includes its series, revision, and patch Message-ID.
+    """
+    repo, error = _resolve_repo(repo_path)
+    if error:
+        return {"status": "error", "message": error}
+    series_ids: set[str] = set()
+    for path in SERIES_ROOT.glob("*/manifest.json"):
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        series_id = manifest.get("series_id")
+        if manifest.get("repo_path") == repo and isinstance(series_id, str):
+            series_ids.add(series_id)
+    reviews = [item for item in _reviews() if item["series_id"] in series_ids]
+    if unacknowledged_only:
+        reviews = [item for item in reviews if not item["acknowledged"]]
+    return {"status": "ok", "repo_path": repo, "review_count": len(reviews),
+            "unacknowledged_count": sum(not item["acknowledged"] for item in reviews),
+            "reviews": reviews}
+
+
+@mcp.tool()
 def get_reviews(series_id: str, unacknowledged_only: bool = False) -> dict[str, Any]:
     """Return captured review replies threaded to patches in a series."""
     if not _safe_series_id(series_id):

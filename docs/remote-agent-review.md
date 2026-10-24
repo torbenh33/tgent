@@ -36,9 +36,10 @@ Use the series ID returned by the import:
 list_review_series(repo_path="/path/to/project")
 get_reviews(series_id="remote-a-123")
 get_reviews(series_id="remote-a-123", unacknowledged_only=true)
+get_review_replies(repo_path="/path/to/project", unacknowledged_only=true)
 ```
 
-`list_review_series` shows each series' revisions and counts of captured and unacknowledged replies. Reviews are matched to patches through email `In-Reply-To`/`References` Message-IDs. Reply to the patch email using your configured review mail workflow; captured replies then appear in `get_reviews`. Use `get_unmatched_reviews` if a reply was captured but could not be associated with a patch.
+`get_review_replies` returns individual reply details across all series for a repository in one call (optionally only unacknowledged replies); it is read-only and does not acknowledge or resolve comments. `list_review_series` shows each series' revisions and counts of captured and unacknowledged replies. Reviews are matched to patches through email `In-Reply-To`/`References` Message-IDs. Reply to the patch email using your configured review mail workflow; captured replies then appear in `get_reviews`. Use `get_unmatched_reviews` if a reply was captured but could not be associated with a patch.
 
 To send feedback to an agent that is still live, explicitly continue it with `continue_agent(agent_id, messages)`. For example:
 
