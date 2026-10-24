@@ -277,8 +277,12 @@ def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_m
     head = result.get("submitted_head") or "not reported"
     base = result.get("base") or "not reported"
     series = result.get("series_id") or f"remote-{agent_id}"
-    message["From"] = "tgit-agent@localhost"
-    message["To"] = f"{os.environ.get('USER', 'operator')}@localhost"
+    reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
+    if not reply_to or "\n" in reply_to or "\r" in reply_to:
+        raise ValueError("TGIT_REVIEW_REPLY_TO must be a valid single-line identity")
+    message["From"] = reply_to
+    message["Reply-To"] = reply_to
+    message["To"] = os.environ.get("USER", "operator")
     message["Date"] = email.utils.formatdate(localtime=True)
     message["Subject"] = f"[tgit-agent] Patch ready for halted agent {agent_id}"
     message.set_content(
