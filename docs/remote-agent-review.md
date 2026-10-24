@@ -60,7 +60,9 @@ If the agent is stopped or unavailable, keep the review visible and provide feed
 ## Other useful review tools
 
 - `get_agent_history(agent_id)` retrieves the agent conversation; `get_agent_log(agent_id)` retrieves a bounded log tail.
-- `stop_agent(agent_id)` requests shutdown. An `awaiting_review` agent cannot be reaped directly: call `stop_agent(agent_id)` first, then `reap_agent(agent_id)`. This uses agent control to terminate its review-waiting worker and makes the lifecycle explicit. Other eligible terminal states are `stopped`, `halted`, and `failed`. Reaping removes snapshot/controller state, not the separately stored submitted patch artifact. Import and preserve that artifact before reaping if needed. Fetching or importing an artifact does not prove it was applied to the target checkout.
+- `stop_agent(agent_id)` requests shutdown. `reap_agent(agent_id)` removes an eligible agent snapshot/controller state. Agents with `submitted_head` or in `awaiting_review` are never reapable until their patch has been handled; their snapshot and patch artifact must be preserved.
+- `reap_agents(agent_ids)` bulk-reaps only stopped/failed agents without submitted patches and returns a per-agent result, including exclusions. It never treats halted/awaiting-review agents as eligible.
+- `list_agents_requiring_attention()` surfaces halted and awaiting-review agents, agents awaiting a command, and any agent with a submitted patch (which is explicitly marked in `attention_reasons`).
 - `wait_for_mail(timeout_seconds=300)` waits for new mail addressed to the configured `TGIT_REVIEW_REPLY_TO` address.
 
 Remote patch transfer and local review storage are separate: the import creates the local series and manifest, retains remote provenance, and threads comments against the imported patch Message-IDs. No arbitrary review-server operations are sent over the remote-agent protocol.

@@ -126,6 +126,37 @@ async def list_remote_agents() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+async def list_agents_requiring_attention() -> list[dict[str, Any]]:
+    """List agents awaiting review/commands or carrying submitted patches."""
+    remote = _remote_adapter()
+    agents = await asyncio.to_thread(remote.list_agents) if remote is not None else await _controller().list_agents_requiring_attention()
+    if remote is not None:
+        agents = [a for a in agents if a.get("submitted_head") or a.get("state") in {"awaiting_review", "halted"} or a.get("stop_reason") == "awaiting_command"]
+        agents = [{**a, "requires_attention": True, "attention_reasons": (["submitted_patch"] if a.get("submitted_head") else []) + ([a["state"]] if a.get("state") in {"awaiting_review", "halted"} else []) + (["awaiting_command"] if a.get("stop_reason") == "awaiting_command" else [])} for a in agents]
+    return agents
+
+@mcp.tool()
+async def reap_agents(agent_ids: list[str]) -> dict[str, Any]:
+    """Bulk reap stopped/failed agents without submitted patches; exclusions are reported."""
+    remote = _remote_adapter()
+    if remote is None:
+        return await _controller().reap_agents(agent_ids)
+    results = []
+    for agent_id in agent_ids:
+        try:
+            metadata = await asyncio.to_thread(remote.status, agent_id)
+            if metadata.get("submitted_head") or metadata.get("state") == "awaiting_review":
+                results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review", "submitted_head": metadata.get("submitted_head")})
+            elif metadata.get("state") not in {"stopped", "failed"}:
+                results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
+            else:
+                results.append({**await asyncio.to_thread(remote.reap, agent_id), "status": "reaped"})
+        except Exception as err:
+            results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
+    return {"results": results}
+
+
+@mcp.tool()
 async def get_agent_status(agent_id: str) -> dict[str, Any]:
     """Return persisted controller metadata for an agent."""
     remote = _remote_adapter()

@@ -593,6 +593,42 @@ class AgentController:
     async def get_status(self, agent_id: str) -> dict[str, Any]:
         return self.store.get_metadata(agent_id)
 
+    async def list_agents_requiring_attention(self) -> list[dict[str, Any]]:
+        """List agents awaiting operator input or carrying submitted patches."""
+        result = []
+        for metadata in await self.list_agents():
+            state = metadata.get("state")
+            submitted = bool(metadata.get("submitted_head"))
+            if submitted or state in {"awaiting_review", "halted"} or metadata.get("stop_reason") == "awaiting_command":
+                reasons = (["submitted_patch"] if submitted else [])
+                if state in {"awaiting_review", "halted"}: reasons.append(state)
+                if metadata.get("stop_reason") == "awaiting_command": reasons.append("awaiting_command")
+                result.append({**metadata, "requires_attention": True, "attention_reasons": reasons})
+        return result
+
+    async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
+        """Safely bulk-reap stopped/failed agents without submitted patches."""
+        if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
+            raise AgentControllerError("agent_ids must be a non-empty list of agent IDs")
+        results = []
+        seen: set[str] = set()
+        for agent_id in agent_ids:
+            if agent_id in seen:
+                results.append({"agent_id": agent_id, "status": "excluded", "reason": "duplicate_id"})
+                continue
+            seen.add(agent_id)
+            try:
+                metadata = self.store.get_metadata(agent_id)
+                if metadata.get("submitted_head") or metadata.get("state") == "awaiting_review":
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review", "submitted_head": metadata.get("submitted_head")})
+                elif metadata.get("state") not in {"stopped", "failed"}:
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
+                else:
+                    results.append({**(await self.reap_agent(agent_id)), "status": "reaped"})
+            except (AgentStoreError, AgentControllerError, OSError) as err:
+                results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
+        return {"results": results}
+
     async def get_agent_log(self, agent_id: str, *, max_bytes: int = 64 * 1024) -> dict[str, Any]:
         """Return the bounded tail of a worker's captured stderr log."""
         validate_agent_id(agent_id)
@@ -689,6 +725,8 @@ class AgentController:
 
     async def reap_agent(self, agent_id: str) -> dict[str, Any]:
         metadata = self.store.get_metadata(agent_id)
+        if metadata.get("submitted_head") or metadata.get("state") == "awaiting_review":
+            raise AgentControllerError("Agent has a submitted patch; preserve its snapshot and review artifacts")
         runtime = self._runtimes.get(agent_id)
         if runtime is not None and runtime.process.returncode is None:
             raise AgentControllerError("Worker process is still running")
