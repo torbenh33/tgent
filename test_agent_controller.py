@@ -121,7 +121,7 @@ async def test_stop_inactive_awaiting_review_agent_makes_it_terminal() -> None:
 
 
 @pytest.mark.anyio
-async def test_reap_inactive_awaiting_review_preserves_submitted_artifact(tmp_path) -> None:
+async def test_reap_rejects_awaiting_review_and_preserves_submitted_artifact(tmp_path) -> None:
     class Store:
         def __init__(self):
             self.metadata = {"agent_id": "agent", "state": "awaiting_review",
@@ -145,9 +145,10 @@ async def test_reap_inactive_awaiting_review_preserves_submitted_artifact(tmp_pa
     controller.snapshot_root = tmp_path / "snapshots"
     controller._runtimes = {}
     with patch("agent_controller.remove_project_snapshot") as remove_snapshot:
-        assert await controller.reap_agent("agent") == {"agent_id": "agent", "state": "reaped"}
-    remove_snapshot.assert_called_once_with(snapshot)
-    assert store.removed
+        with pytest.raises(AgentControllerError, match="Stop the agent"):
+            await controller.reap_agent("agent")
+    remove_snapshot.assert_not_called()
+    assert not store.removed
     assert artifact.read_text(encoding="utf-8") == "submitted"
 
 

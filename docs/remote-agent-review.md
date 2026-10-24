@@ -22,7 +22,7 @@ Use `list_remote_agents` and `get_agent_status(agent_id)` to monitor it. An agen
 review_remote_agent(agent_id="<agent-id>", artifact_directory="/path/to/kept-artifacts")
 ```
 
-For example, if the agent ID is `a-123`, use `review_remote_agent("a-123", "/var/tmp/agent-review")`. The returned result includes the local `series_id`, revision and retained artifact path/digest. The artifact directory is useful for audit; choose a directory writable by the MCP server. Repeating the import for an identical artifact is idempotent and reports the existing revision. If no patch is available, the result has status `unavailable`; retry after the agent submits.
+For example, if the agent ID is `a-123`, use `review_remote_agent("a-123", "/var/tmp/agent-review")`. The returned result includes the local `series_id`, revision and retained artifact path/digest. When applying a downloaded remote patch with `apply_agent_patch`, pass the originating `agent_id`; once Git successfully applies the complete patch series, the tool stops that remote agent through agent control. A failed apply does not stop it. Without an agent ID, application has no lifecycle side effect. The artifact directory is useful for audit; choose a directory writable by the MCP server. Repeating the import for an identical artifact is idempotent and reports the existing revision. If no patch is available, the result has status `unavailable`; retry after the agent submits.
 
 Import checks the artifact digest, mbox structure and Message-IDs, the declared base, and whether patches apply cleanly. Artifacts larger than 16 MiB are rejected. Failed validation returns an error and does not alter your working tree. The remote cover letter is imported verbatim, so treat its text as agent-authored content.
 
@@ -60,7 +60,7 @@ If the agent is stopped or unavailable, keep the review visible and provide feed
 ## Other useful review tools
 
 - `get_agent_history(agent_id)` retrieves the agent conversation; `get_agent_log(agent_id)` retrieves a bounded log tail.
-- `stop_agent(agent_id)` requests shutdown. An inactive `awaiting_review` agent can be reaped directly; other eligible terminal states are `stopped`, `halted`, and `failed`. Reaping removes snapshot/controller state, not the separately stored submitted patch artifact. Import and preserve that artifact before reaping if needed. Reaping does not acknowledge that a patch was applied: an artifact may only have been fetched or imported into review state, neither proves application to the target checkout. Live workers are protected and cannot be reaped.
+- `stop_agent(agent_id)` requests shutdown. An `awaiting_review` agent cannot be reaped directly: call `stop_agent(agent_id)` first, then `reap_agent(agent_id)`. This uses agent control to terminate its review-waiting worker and makes the lifecycle explicit. Other eligible terminal states are `stopped`, `halted`, and `failed`. Reaping removes snapshot/controller state, not the separately stored submitted patch artifact. Import and preserve that artifact before reaping if needed. Fetching or importing an artifact does not prove it was applied to the target checkout.
 - `wait_for_mail(timeout_seconds=300)` waits for new mail addressed to the configured `TGIT_REVIEW_REPLY_TO` address.
 
 Remote patch transfer and local review storage are separate: the import creates the local series and manifest, retains remote provenance, and threads comments against the imported patch Message-IDs. No arbitrary review-server operations are sent over the remote-agent protocol.

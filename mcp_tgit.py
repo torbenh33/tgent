@@ -329,12 +329,13 @@ async def git_status_context() -> dict:
     }
 
 @mcp.tool()
-def apply_agent_patch(patch_path: str, repo_path: str = ".") -> dict[str, Any]:
+async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str | None = None) -> dict[str, Any]:
     """Apply a patch artifact as commits with git am -3.
 
     Requires a clean repository and an existing patch file. Empty messages in
     the mbox, such as format-patch cover letters, are dropped; non-empty patch
     failures remain errors and may leave a Git am session requiring recovery.
+    Pass agent_id for a remote submission; successful application stops that agent.
     """
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
@@ -361,7 +362,21 @@ def apply_agent_patch(patch_path: str, repo_path: str = ".") -> dict[str, Any]:
             "repo_path": target_repo,
             "patch_path": patch_path,
         }
-    return {"status": "ok", "repo_path": target_repo, "patch_path": patch_path, "stdout": proc.stdout}
+    result = {"status": "ok", "repo_path": target_repo, "patch_path": patch_path, "stdout": proc.stdout}
+    if agent_id is not None:
+        if not isinstance(agent_id, str) or not agent_id:
+            return {"status": "error", "message": "agent_id must be a non-empty agent identifier."}
+        try:
+            import asyncio
+            import mcp_agent
+            remote = mcp_agent._remote_adapter()
+            if remote is not None:
+                result["agent_stop"] = await asyncio.to_thread(remote.stop, agent_id)
+            else:
+                result["agent_stop"] = await mcp_agent.stop_agent(agent_id)
+        except Exception as err:
+            result["agent_stop"] = {"status": "error", "message": str(err)}
+    return result
 
 
 @mcp.tool()
