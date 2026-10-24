@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import secrets
 import socket
@@ -288,6 +289,11 @@ class RemoteAgentService:
                 "error": None,
             }
         except Exception as err:
+            logging.getLogger(__name__).exception(
+                "Remote operation failed (operation=%r, request_id=%r)",
+                message.get("operation") if isinstance(message, dict) else None,
+                request_id,
+            )
             return error_response(request_id, err)
 
     async def _client_connected(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
