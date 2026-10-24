@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib.metadata
 import json
 import os
 import re
@@ -217,7 +217,7 @@ def _edit_file(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
         applied.append(index)
     if updated == original:
         return {"status": "ok", "path": path.relative_to(root).as_posix(), "changed": False}
-    temporary = path.with_name(f".{path.name}.agent-{secrets.token_hex(8)}")
+    temporary = path.with_name(f".{module_name}.agent-{secrets.token_hex(8)}")
     try:
         temporary.write_text(updated, encoding="utf-8", newline="")
         os.chmod(temporary, path.stat().st_mode & 0o777)
@@ -332,11 +332,7 @@ class AgentWorker:
         self.available_tools = list(TOOLS)
 
     async def _discover_mcp_tools(self) -> None:
-        """Import project MCP modules and expose their FastMCP tools/resources.
-
-        Modules are imported only from this checkout's top level. Their server
-        functions execute in the worker sandbox, not through controller RPC.
-        """
+        """Load explicitly registered installed servers; do not trust project files."""
         response = await self.client.request("agent.tools.get", {})
         allowed_modules = response.get("tools", []) if isinstance(response, dict) else []
         if not isinstance(allowed_modules, list) or any(
@@ -347,22 +343,19 @@ class AgentWorker:
         self.dynamic_tools.clear()
         self.available_tools = list(TOOLS)
         catalog: list[dict[str, Any]] = []
-        for path in sorted(self.root.glob("mcp_*.py")):
-            if path.is_symlink() or not path.is_file() or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem) is None:
+        entry_points = importlib.metadata.entry_points()
+        for entry_point in sorted(entry_points.select(group="tgit_agent.mcp_servers"), key=lambda ep: ep.name):
+            if entry_point.name not in allowed_modules:
                 continue
+            module_name = entry_point.name
+            if re.fullmatch(r"mcp_[A-Za-z0-9_-]+", module_name) is None:
+                raise WorkerError(f"Invalid installed MCP server name: {module_name}")
             module_items: list[dict[str, Any]] = []
-            module_name = f"_agent_discovered_{path.stem}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec is None or spec.loader is None:
-                raise WorkerError(f"Cannot load MCP module: {path.name}")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
             try:
-                spec.loader.exec_module(module)
+                loaded = entry_point.load()
+                server = loaded() if callable(loaded) and not hasattr(loaded, "list_tools") else loaded
             except Exception as err:
-                sys.modules.pop(module_name, None)
-                raise WorkerError(f"Could not import MCP module {path.name}: {err}") from err
-            server = getattr(module, "mcp", None)
+                raise WorkerError(f"Could not load installed MCP server {module_name}: {err}") from err
             if server is None:
                 continue
 
@@ -376,14 +369,14 @@ class AgentWorker:
                         schema = getattr(tool, "parameters", None)
                     if not isinstance(name, str) or not isinstance(schema, dict):
                         continue
-                    public_name = f"{path.stem}__{name}"
+                    public_name = f"{module_name}__{name}"
                     if len(public_name) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", public_name):
                         raise WorkerError(f"MCP tool name cannot be exposed to the model: {public_name}")
                     if public_name in self.dynamic_tools:
                         raise WorkerError(f"Duplicate discovered MCP tool name: {public_name}")
-                    description = getattr(tool, "description", None) or f"MCP tool {name} from {path.name}"
+                    description = getattr(tool, "description", None) or f"MCP tool {name} from {module_name}"
                     module_items.append({"name": name, "kind": "tool", "description": str(description)[:1000], "parameters": schema})
-                    if path.stem not in allowed_modules:
+                    if module_name not in allowed_modules:
                         continue
                     self.dynamic_tools[public_name] = (server, name, "tool", None, ())
                     self.available_tools.append({
@@ -410,7 +403,7 @@ class AgentWorker:
                 if not isinstance(uri, str):
                     continue
                 resource_name = getattr(resource, "name", None) or uri
-                public_name = f"{path.stem}__resource__{resource_name}"
+                public_name = f"{module_name}__resource__{resource_name}"
                 public_name = re.sub(r"[^A-Za-z0-9_-]", "_", public_name)
                 if len(public_name) > 64:
                     public_name = public_name[:64]
@@ -426,7 +419,7 @@ class AgentWorker:
                     "additionalProperties": False,
                 }
                 module_items.append({"name": str(resource_name)[:256], "kind": "resource_template" if is_template else "resource", "uri": uri[:2048], "description": str(description)[:1000]})
-                if path.stem not in allowed_modules:
+                if module_name not in allowed_modules:
                     continue
                 self.dynamic_tools[public_name] = (server, uri, "resource", uri, variables)
                 self.available_tools.append({
@@ -437,7 +430,7 @@ class AgentWorker:
                         "parameters": parameters,
                     },
                 })
-            catalog.append({"name": path.stem, "items": module_items})
+            catalog.append({"name": module_name, "items": module_items})
         await self.client.request("agent.tools.report", {"modules": catalog})
 
     async def _call_discovered_tool(self, name: str, arguments: dict[str, Any]) -> Any:

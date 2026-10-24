@@ -159,7 +159,15 @@ class AgentController:
         self.runtime_version = runtime_version
         self.runtime_layout = runtime_layout or build_runtime_layout(
             runtime_dirs=(Path(sys.prefix),),
-            runtime_files=(Path(__file__).with_name("agent_worker.py"), Path(__file__).with_name("agent_ipc.py")),
+            runtime_files=tuple(
+                Path(__file__).parent / name
+                for name in (
+                    "agent_worker.py", "agent_ipc.py", "agent_sandbox.py", "agent_snapshot.py",
+                    "agent_project.py", "agent_store.py", "git_patch_selection.py", "test_subprocess.py",
+                    "remote_agent_service.py", "remote_agent_config.py", "remote_agent_daemon.py",
+                    "remote_agent_protocol.py", "remote_agent_upload.py", "llm.py", "mcp_test_runner.py",
+                )
+            ),
         )
         self.bwrap = bwrap
         self.max_model_calls = max(1, int(max_model_calls))

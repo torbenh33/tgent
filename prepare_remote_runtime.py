@@ -86,6 +86,19 @@ def prepare_remote_runtime(
         runtime_files=(
             Path(__file__).with_name("agent_worker.py"),
             Path(__file__).with_name("agent_ipc.py"),
+            Path(__file__).with_name("agent_sandbox.py"),
+            Path(__file__).with_name("agent_snapshot.py"),
+            Path(__file__).with_name("agent_project.py"),
+            Path(__file__).with_name("agent_store.py"),
+            Path(__file__).with_name("git_patch_selection.py"),
+            Path(__file__).with_name("test_subprocess.py"),
+            Path(__file__).with_name("remote_agent_service.py"),
+            Path(__file__).with_name("remote_agent_config.py"),
+            Path(__file__).with_name("remote_agent_daemon.py"),
+            Path(__file__).with_name("remote_agent_protocol.py"),
+            Path(__file__).with_name("remote_agent_upload.py"),
+            Path(__file__).with_name("llm.py"),
+            Path(__file__).with_name("mcp_test_runner.py"),
         ),
     )
     runtime_root = config.runtime_dir

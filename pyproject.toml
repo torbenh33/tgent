@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tgit-agent"
+version = "0.1.0"
+description = "Bubblewrap-isolated coding agents with MCP server support"
+requires-python = ">=3.11"
+dependencies = ["fastmcp>=2.0", "openai>=1.0"]
+
+[project.scripts]
+tgit-agent-controller = "mcp_agent:main"
+
+tgit-prepare-remote-runtime = "prepare_remote_runtime:main"
+tgit-deploy-remote-agent = "deploy_remote_agent:main"
+
+[project.entry-points."tgit_agent.mcp_servers"]
+mcp_test_runner = "mcp_test_runner:mcp"
+
+[tool.setuptools]
+py-modules = ["agent_controller", "agent_ipc", "agent_project", "agent_sandbox", "agent_snapshot", "agent_store", "agent_worker", "deploy_remote_agent", "git_notes", "git_patch_selection", "interactive_workflow", "llm", "mcp_agent", "mcp_apt", "mcp_stgit", "mcp_test_runner", "mcp_tgit", "mcp_tgit_review", "mcp_tmergetool", "mcp_trebasei", "prepare_remote_runtime", "prune_broken_git_notes", "remote_agent_adapter", "remote_agent_config", "remote_agent_daemon", "remote_agent_protocol", "remote_agent_service", "remote_agent_upload", "sumup", "summary_mcp_server", "test_subprocess"]
