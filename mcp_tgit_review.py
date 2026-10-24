@@ -320,7 +320,10 @@ def export_patch_series(
         introduction = body.strip() if separator else ""
         generated_body = generated_body.replace("*** BLURB HERE ***", introduction, 1)
         patches[0].set_content(generated_body)
-        raw = _serialize_mbox(patches)
+
+    # Serialize the modified messages unconditionally: format-patch's raw mbox
+    # does not include headers added to the parsed Message objects above.
+    raw = _serialize_mbox(patches)
 
     patch_ids = [_message_id(patch) for patch in patches]
     if len(patches) != commit_count + 1 or any(patch_id is None for patch_id in patch_ids):
