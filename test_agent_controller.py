@@ -257,6 +257,45 @@ def test_start_request_accepts_bounded_human_name() -> None:
     assert history[0]["content"] == "task"
 
 
+
+@pytest.mark.anyio
+async def test_attention_listing_includes_submitted_and_waiting_agents() -> None:
+    class Store:
+        def get_metadata(self, agent_id):
+            return {"agent_id": agent_id, "state": {"patch": "stopped", "review": "awaiting_review", "command": "halted", "other": "running"}[agent_id], "submitted_head": "abc123" if agent_id == "patch" else None, "stop_reason": "awaiting_command" if agent_id == "command" else None}
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    async def agents():
+        return [controller.store.get_metadata(name) for name in ("patch", "review", "command", "other")]
+    controller.list_agents = agents
+
+    result = await controller.list_agents_requiring_attention()
+    assert [agent["agent_id"] for agent in result] == ["patch", "review", "command"]
+    assert "submitted_patch" in result[0]["attention_reasons"]
+    assert result[2]["attention_reasons"] == ["halted", "awaiting_command"]
+
+@pytest.mark.anyio
+async def test_bulk_reap_preserves_submitted_patch_and_excludes_ineligible(tmp_path) -> None:
+    class Store:
+        metadata = {
+            "clean": {"agent_id": "clean", "state": "stopped", "snapshot_root": str(tmp_path / "clean")},
+            "patch": {"agent_id": "patch", "state": "stopped", "submitted_head": "a" * 40},
+            "active": {"agent_id": "active", "state": "running"},
+        }
+        def get_metadata(self, agent_id):
+            return dict(self.metadata[agent_id])
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    async def reap(agent_id):
+        assert agent_id == "clean"
+        return {"agent_id": agent_id, "state": "reaped"}
+    controller.reap_agent = reap
+
+    result = await controller.reap_agents(["clean", "patch", "active"])
+    assert [item["status"] for item in result["results"]] == ["reaped", "excluded", "excluded"]
+    assert result["results"][1]["submitted_head"] == "a" * 40
+
 def test_start_request_rejects_non_message_history_entries() -> None:
     with pytest.raises(AgentControllerError, match="message objects"):
         AgentController._validate_start_request(
