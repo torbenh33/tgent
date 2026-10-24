@@ -95,6 +95,28 @@ async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_pat
 
 
 @pytest.mark.anyio
+async def test_stop_inactive_awaiting_review_agent_makes_it_terminal() -> None:
+    class Store:
+        metadata = {"agent_id": "agent", "state": "awaiting_review"}
+
+        def get_metadata(self, _agent_id):
+            return dict(self.metadata)
+
+        def update_metadata(self, _agent_id, values):
+            self.metadata.update(values)
+            return dict(self.metadata)
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._runtimes = {}
+
+    result = await controller.stop_agent("agent")
+
+    assert result["state"] == "stopped"
+    assert result["stop_reason"] == "operator_stopped"
+
+
+@pytest.mark.anyio
 async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):

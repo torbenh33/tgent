@@ -603,6 +603,11 @@ class AgentController:
         runtime = self._runtimes.get(agent_id)
         if runtime is None:
             metadata = self.store.get_metadata(agent_id)
+            if metadata.get("state") == "awaiting_review":
+                # No runtime means there is no worker to receive a stop command.
+                # Restrict this transition to the inactive review-waiting state.
+                self.store.update_metadata(agent_id, {"state": "stopped", "stop_reason": "operator_stopped"})
+                return self.store.get_metadata(agent_id)
             return {"agent_id": agent_id, "state": metadata.get("state"), "message": "No live worker process."}
         runtime.stop_requested = True
         self.store.update_metadata(agent_id, {"state": "stopping"})
