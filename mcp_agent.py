@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import mailbox
+import email.message
+import email.utils
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +264,39 @@ async def review_remote_agent(agent_id: str, artifact_directory: str) -> dict[st
     return {**result, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
 
 
+def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_module: Any) -> None:
+    """Deliver a concise operator notice to the review Maildir."""
+    paths = review_module.DEFAULT_PATHS
+    paths.mail_spool.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for folder in ("cur", "new", "tmp"):
+        (paths.mail_spool / folder).mkdir(mode=0o700, exist_ok=True)
+    message = email.message.EmailMessage()
+    agent_id = str(result.get("agent_id", "unknown"))
+    name = agent.get("name") or agent_id
+    state = agent.get("state", "unknown")
+    head = result.get("submitted_head") or "not reported"
+    base = result.get("base") or "not reported"
+    series = result.get("series_id") or f"remote-{agent_id}"
+    message["From"] = "tgit-agent@localhost"
+    message["To"] = f"{os.environ.get('USER', 'operator')}@localhost"
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message["Subject"] = f"[tgit-agent] Patch ready for halted agent {agent_id}"
+    message.set_content(
+        f"A new remote patch was imported for an inactive agent.\\n\\n"
+        f"Agent: {name} ({agent_id})\\nState: {state}\\n"
+        f"Review series: {series}\\nSubmitted head: {head}\\nBase: {base}\\n\\n"
+        "Review the imported series before applying it. Submitted-patch agents "
+        "cannot be continued directly. After review, use start_agent for further "
+        "work; continue_agent is available only for eligible halted/stopped agents "
+        "without a submitted patch.\\n"
+    )
+    box = mailbox.Maildir(paths.mail_spool, create=True)
+    try:
+        box.add(message)
+    finally:
+        box.close()
+
+
 @mcp.tool()
 async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[str, Any]:
     """Import available remote submissions, reporting each agent independently."""
@@ -275,6 +311,10 @@ async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[s
             continue
         try:
             result = await review_remote_agent(agent_id, artifact_directory)
+            if (result.get("status") == "ok" and not result.get("idempotent")
+                    and agent.get("state") == "halted"):
+                review_module = importlib.import_module("mcp_tgit_review")
+                await asyncio.to_thread(_notify_halted_patch, agent | {"agent_id": agent_id}, result, review_module)
             if result.get("status") == "unavailable":
                 result = {**result, "status": "skipped", "reason": "no-submission"}
             elif result.get("idempotent"):
