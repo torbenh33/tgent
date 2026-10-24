@@ -615,7 +615,7 @@ class AgentController:
 
     async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         validate = self.store.get_metadata(agent_id)
-        if validate.get("state") not in {"halted", "awaiting_review", "review_received"}:
+        if validate.get("state") not in {"halted", "stopped", "awaiting_review", "review_received"}:
             raise AgentControllerError(f"Agent cannot continue from state {validate.get('state')}")
         if not messages or any(not isinstance(message, dict) for message in messages):
             raise AgentControllerError("continue requires one or more message objects")
