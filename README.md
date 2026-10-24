@@ -37,6 +37,8 @@ The MCP server uses the directory from which it is launched as its project root.
 3. Call `list_remote_agents` for all agent metadata plus the cached `history_summary` field (null until summarized); call `summarize_agent_history` on demand. Cached summaries are persisted per agent and invalidated automatically whenever history is appended.
 4. Review the generated commits/patch series before applying them to the main project.
 
+A halted worker can be continued after controller restart. Continuation creates a new agent record and worker from the halted agent's preserved transcript and private project snapshot; the original record and snapshot remain unchanged. The response identifies the new agent and its `parent_agent_id`. Agents with submitted patches, and inactive review-waiting agents, are not restarted this way; use existing live continuation/review workflows to avoid duplicate patch submissions.
+
 ## Tests
 
 Run the repository test suite from the checkout with pytest:

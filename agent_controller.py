@@ -612,7 +612,25 @@ class AgentController:
             raise AgentControllerError("continue requires one or more message objects")
         runtime = self._runtimes.get(agent_id)
         if runtime is None or runtime.process.returncode is not None:
-            raise AgentControllerError("Worker process is not available to resume")
+            if validate.get("state") != "halted":
+                raise AgentControllerError("Only an inactive halted agent can be restarted")
+            if validate.get("submitted_head"):
+                raise AgentControllerError("An agent with a submitted patch cannot be restarted")
+            snapshot_project = Path(validate.get("snapshot_project", ""))
+            snapshot_root = Path(validate.get("snapshot_root", ""))
+            if (not snapshot_project.is_absolute() or not snapshot_root.is_relative_to(self.snapshot_root)
+                    or snapshot_project.is_symlink() or not snapshot_project.is_dir()
+                    or snapshot_project.parent != snapshot_root):
+                raise AgentControllerError("Recorded agent snapshot is unavailable or invalid")
+            history = self.store.get_history(agent_id)
+            if len(history) + len(messages) > MAX_HISTORY_MESSAGES or len(json.dumps([*history, *messages], ensure_ascii=False).encode("utf-8")) > MAX_HISTORY_MESSAGE_BYTES:
+                raise AgentControllerError("Continued history exceeds size limit")
+            restarted = await self.start_agent(
+                {"schema_version": 1, "history": [*history, *messages], "name": validate.get("name", "Agent")},
+                source_root=snapshot_project,
+            )
+            self.store.update_metadata(restarted["agent_id"], {"parent_agent_id": agent_id})
+            return {**restarted, "parent_agent_id": agent_id, "queued_messages": len(messages)}
         self.store.append_history(agent_id, messages)
         command = {"command": "review_feedback", "messages": messages}
         await runtime.commands.put(command)

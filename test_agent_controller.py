@@ -129,6 +129,42 @@ async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
         await controller.set_agent_tools("agent", [])
 
 
+@pytest.mark.anyio
+async def test_continue_inactive_halted_agent_starts_child_from_snapshot(tmp_path) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": "halted", "snapshot_root": str(snapshot_root),
+                    "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
+
+        def get_history(self, _agent_id):
+            return [{"role": "user", "content": "original"}]
+
+        def update_metadata(self, _agent_id, _values):
+            return {}
+
+    snapshot_root = tmp_path / "snapshots" / "old"
+    snapshot_project = snapshot_root / "project"
+    snapshot_project.mkdir(parents=True)
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    calls = []
+
+    async def start(request, *, source_root=None):
+        calls.append((request, source_root))
+        return {"status": "ok", "agent_id": "new", "state": "running"}
+
+    controller.start_agent = start
+    result = await controller.continue_agent("old", [{"role": "user", "content": "more"}])
+    assert result["agent_id"] == "new"
+    assert result["parent_agent_id"] == "old"
+    assert calls[0][0]["history"] == [
+        {"role": "user", "content": "original"}, {"role": "user", "content": "more"}
+    ]
+    assert calls[0][1] == snapshot_project
+
+
 @pytest.mark.parametrize("name", ["", "  ", "x" * 101, "bad\nname", 7])
 def test_start_request_rejects_invalid_name(name: object) -> None:
     with pytest.raises(AgentControllerError, match="name"):
