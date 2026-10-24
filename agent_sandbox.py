@@ -182,6 +182,7 @@ def build_runtime_layout(
     """Describe local host runtime mounts using their normal sandbox paths."""
     mounts: list[RuntimeMount] = []
     symlinks: list[tuple[Path, str]] = []
+    names: set[str] = set()
     for raw_system_dir in _SYSTEM_DIRS:
         source = Path(raw_system_dir)
         if source.is_symlink():

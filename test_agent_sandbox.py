@@ -80,6 +80,22 @@ def test_runtime_layout_includes_host_ca_bundle_when_available(monkeypatch, tmp_
     assert mount.source == bundle.resolve()
 
 
+def test_runtime_layout_mounts_trusted_runtime_files_and_rejects_duplicate_basenames(tmp_path: Path) -> None:
+    from agent_sandbox import build_runtime_layout
+
+    first = tmp_path / "first" / "runtime.py"
+    second = tmp_path / "second" / "runtime.py"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("trusted", encoding="utf-8")
+    second.write_text("duplicate", encoding="utf-8")
+
+    layout = build_runtime_layout(runtime_files=(first,))
+    assert RuntimeMount(first.resolve(), Path("/opt/agent-runtime/runtime.py")) in layout.mounts
+    with pytest.raises(SandboxError, match="duplicate basenames"):
+        build_runtime_layout(runtime_files=(first, second))
+
+
 def test_mounts_trusted_runtime_directory_read_only_at_original_path(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
