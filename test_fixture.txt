@@ -1,0 +1,1 @@
+A stable file for git_notes doctests.
