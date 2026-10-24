@@ -9,14 +9,21 @@ from test_subprocess import run_subprocess
 mcp = FastMCP("TestRunnerService")
 
 
-@mcp.resource("unittests://{modpath}")
-async def run_unittests(modpath: str) -> dict:
-    """Run unittest discovery for a given test module file.
-       + some stuff"""
+def _validate_module_target(modpath: str):
+    """Return a resource error for an invalid module path, otherwise None."""
     if not modpath:
         return {"status": "error", "message": "Module path must be provided."}
     if not os.path.exists(modpath):
         return {"status": "error", "message": f"Module file not found at {modpath}"}
+    return None
+
+@mcp.resource("unittests://{modpath}")
+async def run_unittests(modpath: str) -> dict:
+    """Run unittest discovery for a given test module file.
+       + some stuff"""
+    error = _validate_module_target(modpath)
+    if error is not None:
+        return error
 
     test_dir = modpath or "."
 
@@ -73,10 +80,9 @@ async def run_pytest_default() -> dict:
 @mcp.resource("doctests://{modpath}")
 async def run_doctests(modpath: str) -> dict:
     """Run doctests for a given module file."""
-    if not modpath:
-        return {"status": "error", "message": "Module path must be provided."}
-    if not os.path.exists(modpath):
-        return {"status": "error", "message": f"Module file not found at {modpath}"}
+    error = _validate_module_target(modpath)
+    if error is not None:
+        return error
 
     return await run_subprocess(sys.executable, "-m", "doctest", "-v", modpath)
 
