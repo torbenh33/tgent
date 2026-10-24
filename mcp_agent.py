@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,20 @@ async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
         result = await asyncio.to_thread(remote.history, agent_id)
         return result["messages"]
     return await _controller().get_history(agent_id)
+
+
+@mcp.tool()
+async def summarize_agent_history(agent_id: str) -> str:
+    """Summarize conversation with the configured LLM; use get_agent_history for full debugging detail."""
+    history = await get_agent_history(agent_id)
+    response = await _get_llm().model_callback({"messages": [
+        {"role": "system", "content": "Summarize this coding agent conversation for an operator: task, key actions and decisions, outcome, unresolved issues, and evidence. Be concise and distinguish facts from uncertainty."},
+        {"role": "user", "content": json.dumps(history, ensure_ascii=False)},
+    ], "max_tokens": 1200})
+    try:
+        return response["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("LLM returned an invalid conversation summary response") from exc
 
 
 @mcp.tool()
