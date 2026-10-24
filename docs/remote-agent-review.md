@@ -26,7 +26,7 @@ For example, if the agent ID is `a-123`, use `review_remote_agent("a-123", "/var
 
 Import checks the artifact digest, mbox structure and Message-IDs, the declared base, and whether patches apply cleanly. Artifacts larger than 16 MiB are rejected. Failed validation returns an error and does not alter your working tree. The remote cover letter is imported verbatim, so treat its text as agent-authored content.
 
-There is also a lower-level `retrieve_agent_patch(agent_id, destination)` tool that only downloads the remote artifact and reports its local path; it does **not** import the series. Prefer `review_remote_agent` for normal review.
+There is also a lower-level `retrieve_agent_patch(agent_id, destination="/tmp")` tool that only downloads the remote artifact and reports its local path; it does **not** import the series. Its destination must be an existing directory, never a filename. The patch is saved inside that directory using a generated `<agent-id>.patch` filename. The default `/tmp` destination avoids creating or modifying files in the current Git repository; choose another directory explicitly if you want to retain the artifact elsewhere. Prefer `review_remote_agent` for normal review.
 
 ## Read and reply to comments
 

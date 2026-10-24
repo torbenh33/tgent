@@ -110,6 +110,25 @@ def test_retrieve_patch_downloads_verified_artifact_atomically(tmp_path, monkeyp
     assert not list(destination.glob(".agent-1.patch.*"))
 
 
+def test_retrieve_patch_rejects_file_destination(tmp_path) -> None:
+    destination = tmp_path / "not-a-directory"
+    destination.write_text("keep", encoding="utf-8")
+    client = _FakeClient([{"ok": True, "result": {"available": True}}])
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    with pytest.raises(RemoteAgentAdapterError, match="destination is not a directory"):
+        adapter.retrieve_patch("agent-1", destination)
+
+    assert destination.read_text(encoding="utf-8") == "keep"
+
+
+def test_retrieve_patch_defaults_to_tmp_directory(tmp_path, monkeypatch) -> None:
+    client = _FakeClient([{"ok": True, "result": {"available": False}}])
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    assert adapter.retrieve_patch("agent-1") is None
+
+
 def test_retrieve_patch_returns_none_when_artifact_is_unavailable(tmp_path, monkeypatch) -> None:
     destination = tmp_path / "patches"
     destination.mkdir()

@@ -278,11 +278,14 @@ async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[s
 
 
 @mcp.tool()
-async def retrieve_agent_patch(agent_id: str, destination: str) -> dict[str, Any]:
-    """Download a submitted remote patch artifact for local review.
+async def retrieve_agent_patch(agent_id: str, destination: str = "/tmp") -> dict[str, Any]:
+    """Download a submitted patch into a destination directory (default: /tmp).
 
-    Returns the local artifact path, or ``available: false`` if the agent has
-    not submitted a patch yet. Patch retrieval is available in remote mode.
+    ``destination`` must be a directory, never a filename, and must already
+    exist. Retrieval writes only the generated patch file inside that directory;
+    the default keeps the current Git repository clean. Returns the local
+    artifact path, or ``available: false`` if no patch has been submitted.
+    Available in remote mode.
     """
     remote = _remote_adapter()
     if remote is None:

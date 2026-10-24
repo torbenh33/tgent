@@ -142,8 +142,12 @@ class RemoteAgentAdapter:
         """Return metadata for the remote patch artifact, if one is available."""
         return self._request("patches", agent_id=agent_id)
 
-    def retrieve_patch(self, agent_id: str, destination: str | os.PathLike[str]) -> Path | None:
-        """Download an available patch artifact into a local directory."""
+    def retrieve_patch(self, agent_id: str, destination: str | os.PathLike[str] = "/tmp") -> Path | None:
+        """Download an available patch artifact into an existing local directory.
+
+        The destination must be a directory, not a filename. The fixed artifact
+        name is generated from the validated remote agent ID.
+        """
         result = self.patches(agent_id)
         if result.get("available") is not True:
             return None
