@@ -21,10 +21,14 @@ class FakeWorkerClient:
         self.model_requests: list[dict[str, Any]] = []
         self.states: list[dict[str, Any]] = []
         self.awaited_commands: list[dict[str, Any]] = []
+        self.reported_tool_catalogs: list[dict[str, Any]] = []
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "agent.tools.get":
             return {"tools": []}
+        if method == "agent.tools.report":
+            self.reported_tool_catalogs.append(params)
+            return {"reported": len(params["modules"])}
         if method == "worker.hello":
             return {"protocol_version": 1, "agent_id": params["agent_id"]}
         if method == "history.get":
@@ -111,6 +115,8 @@ class _ControllerWorkerBridge:
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "agent.tools.get":
             return {"tools": []}
+        if method == "agent.tools.report":
+            return await self.controller._report_tool_catalog("test-agent", params)
         if method == "worker.hello":
             return await self.controller._hello("test-agent", params)
         if method == "history.get":
@@ -155,6 +161,7 @@ def test_worker_loop_uses_controller_model_proxy_without_live_model(tmp_path: Pa
     controller = AgentController.__new__(AgentController)
     controller.model_callback = fake_model_callback
     controller.store = _IntegrationStore()
+    controller._tool_catalogs = {}
     runtime = SimpleNamespace(model_calls=0, lock=asyncio.Lock())
     controller._runtimes = {"test-agent": runtime}
     bridge = _ControllerWorkerBridge(
@@ -209,6 +216,8 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
         async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
             if method == "agent.tools.get":
                 return {"tools": []}
+            if method == "agent.tools.report":
+                return {"reported": len(params["modules"])}
             if method == "worker.hello":
                 return {"protocol_version": 1, "agent_id": params["agent_id"]}
             if method == "history.get":
@@ -278,6 +287,12 @@ class FakeMCP:
     async def call_tool(self, name, arguments):
         return {'tool': name, 'arguments': arguments}
 
+    async def list_resources(self):
+        return []
+
+    async def read_resource(self, uri):
+        return None
+
 mcp = FakeMCP()
 """,
         encoding="utf-8",
@@ -289,6 +304,9 @@ mcp = FakeMCP()
 
         async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
             self.methods.append(method)
+            if method == "agent.tools.report":
+                self.reported_catalog = params["modules"]
+                return {"reported": len(self.reported_catalog)}
             assert method == "agent.tools.get"
             return {"tools": ["mcp_demo"]}
 
@@ -297,7 +315,9 @@ mcp = FakeMCP()
 
     async def exercise() -> None:
         await worker._discover_mcp_tools()
-        assert client.methods == ["agent.tools.get"]
+        assert client.methods == ["agent.tools.get", "agent.tools.report"]
+        assert client.reported_catalog[0]["name"] == "mcp_demo"
+        assert [tool["name"] for tool in client.reported_catalog[0]["items"]] == ["echo"]
         assert "mcp_demo__echo" in worker.dynamic_tools
         tool_names = {item["function"]["name"] for item in worker.available_tools}
         assert "mcp_demo__echo" in tool_names

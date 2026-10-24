@@ -168,7 +168,12 @@ class AgentController:
         # Dynamic project MCP tools are opt-in and controlled only by this controller.
         self._tool_allowlists: dict[str, set[str]] = {}
         self._tool_catalogs: dict[str, list[dict[str, Any]]] = {}
-        self.default_tool_modules = [name.strip() for name in os.environ.get("TGIT_AGENT_DEFAULT_TOOLS", "").split(",") if name.strip()]
+        self.default_tool_modules = ["mcp_test_runner"]
+        self.default_tool_modules.extend(
+            name.strip()
+            for name in os.environ.get("TGIT_AGENT_DEFAULT_TOOLS", "").split(",")
+            if name.strip() and name.strip() not in self.default_tool_modules
+        )
         self._lock = asyncio.Lock()
 
     @staticmethod
