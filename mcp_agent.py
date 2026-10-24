@@ -249,6 +249,30 @@ async def review_remote_agent(agent_id: str, artifact_directory: str) -> dict[st
 
 
 @mcp.tool()
+async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[str, Any]:
+    """Import available remote submissions, reporting each agent independently."""
+    remote = _remote_adapter()
+    if remote is None:
+        return {"status": "error", "message": "Remote review requires remote mode.", "agents": []}
+    agents = await asyncio.to_thread(remote.list_agents)
+    results: list[dict[str, Any]] = []
+    for agent in agents:
+        agent_id = agent.get("agent_id") or agent.get("id")
+        if not isinstance(agent_id, str) or not agent_id:
+            continue
+        try:
+            result = await review_remote_agent(agent_id, artifact_directory)
+            if result.get("status") == "unavailable":
+                result = {**result, "status": "skipped", "reason": "no-submission"}
+            elif result.get("idempotent"):
+                result = {**result, "status": "skipped", "reason": "already-imported"}
+            results.append(result)
+        except Exception as err:
+            results.append({"agent_id": agent_id, "status": "error", "message": str(err)})
+    return {"status": "ok", "agents": results}
+
+
+@mcp.tool()
 async def retrieve_agent_patch(agent_id: str, destination: str) -> dict[str, Any]:
     """Download a submitted remote patch artifact for local review.
 
