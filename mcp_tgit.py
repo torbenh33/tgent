@@ -330,7 +330,12 @@ async def git_status_context() -> dict:
 
 @mcp.tool()
 def apply_agent_patch(patch_path: str, repo_path: str = ".") -> dict[str, Any]:
-    """Apply a patch artifact as commits with git am -3. Requires a clean repository; patch_path must name an existing patch file."""
+    """Apply a patch artifact as commits with git am -3.
+
+    Requires a clean repository and an existing patch file. Empty messages in
+    the mbox, such as format-patch cover letters, are dropped; non-empty patch
+    failures remain errors and may leave a Git am session requiring recovery.
+    """
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
     if not isinstance(patch_path, str) or not patch_path.strip():
@@ -346,7 +351,7 @@ def apply_agent_patch(patch_path: str, repo_path: str = ".") -> dict[str, Any]:
     if status_proc.stdout.strip():
         return {"status": "error", "message": "Repository must be clean before applying a patch.", "repo_path": target_repo}
 
-    proc = _git_command(target_repo, ["am", "-3", os.path.abspath(patch_path)])
+    proc = _git_command(target_repo, ["am", "-3", "--empty=drop", os.path.abspath(patch_path)])
     if proc.returncode != 0:
         return {
             "status": "error",
