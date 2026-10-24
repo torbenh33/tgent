@@ -7,6 +7,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 from datetime import datetime, timezone
 
 import pytest
@@ -149,3 +150,34 @@ def test_dispatch_does_not_expose_unregistered_operations() -> None:
     assert response["ok"] is False
     assert response["request_id"] == "req-1"
     assert response["error"]["code"] == "request_failed"
+
+
+def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_path: Path) -> None:
+    class Snapshot:
+        base_commit = "base-sha"
+        project_root = tmp_path
+        root = tmp_path / "agent-123"
+
+    service = RemoteAgentService.__new__(RemoteAgentService)
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    service.config = type("Config", (), {"patches_dir": patches})()
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        raw = b"From abc\nSubject: [PATCH 0/1] cover\n\ncover\n\nFrom def\nSubject: [PATCH 1/1] change\n"
+        return subprocess.CompletedProcess(argv, 0, raw)
+
+    import remote_agent_service
+    original = remote_agent_service.subprocess.run
+    remote_agent_service.subprocess.run = fake_run
+    try:
+        result = asyncio.run(service._submit_patch(Snapshot(), {"head_commit": "head-sha"}))
+    finally:
+        remote_agent_service.subprocess.run = original
+
+    assert result["status"] == "ok"
+    assert result["patch_artifact"] == "agent-123.patch"
+    assert (patches / "agent-123.patch").read_bytes().startswith(b"From abc")
+    assert "format-patch" in calls[0]

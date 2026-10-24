@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
-import importlib
-import inspect
 import json
 import os
 import secrets
@@ -177,36 +175,17 @@ class RemoteAgentService:
         return self._llm
 
     async def _submit_patch(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:
-        module = importlib.import_module("mcp_tgit_review")
-        export = getattr(module, "export_patch_series", None)
-        if not callable(export):
-            raise RuntimeError("mcp_tgit_review.export_patch_series is unavailable")
-        export_kwargs = {
-            "base": snapshot.base_commit,
-            "head": params["head_commit"],
-            "repo_path": str(snapshot.project_root),
-        }
-        if "series_id" in inspect.signature(export).parameters:
-            export_kwargs["series_id"] = f"remote-{snapshot.root.name}"
-        result = await asyncio.to_thread(export, **export_kwargs)
-        if not isinstance(result, dict) or result.get("status") != "ok":
-            raise RuntimeError(f"Patch queue export failed: {result}")
-
-        # Transfer the complete series produced in the isolated snapshot,
-        # including its agent-authored cover letter and original Message-IDs.
-        mbox_name = result.get("mbox_path")
-        if isinstance(mbox_name, str):
-            mbox_path = Path(mbox_name)
-            patch_bytes = await asyncio.to_thread(mbox_path.read_bytes)
-        else:
-            # Compatibility for custom exporters predating the local series API;
-            # production mcp_tgit_review always provides its complete mbox.
-            legacy = await asyncio.to_thread(
-                subprocess.run,
-                ("git", "-C", str(snapshot.project_root), "format-patch", "--binary", "--stdout", f"{snapshot.base_commit}..{params['head_commit']}"),
-                check=True, capture_output=True, timeout=60,
-            )
-            patch_bytes = legacy.stdout
+        # Local review state and Maildir do not exist on the remote service.
+        # Generate an mbox artifact directly; local import creates its series.
+        exported = await asyncio.to_thread(
+            subprocess.run,
+            ("git", "-C", str(snapshot.project_root), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{snapshot.base_commit}..{params['head_commit']}"),
+            check=True, capture_output=True, timeout=60,
+        )
+        patch_bytes = exported.stdout
+        if not patch_bytes.strip():
+            raise RuntimeError("Patch export produced an empty mbox")
+        result = {"status": "ok", "base": snapshot.base_commit, "head": params["head_commit"]}
         if len(patch_bytes) > 16 * 1024 * 1024:
             raise RuntimeError("Patch artifact exceeds 16 MiB limit")
         artifact_name = f"{snapshot.root.name}.patch"
