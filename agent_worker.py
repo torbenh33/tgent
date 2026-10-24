@@ -220,7 +220,7 @@ def _edit_file(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
         applied.append(index)
     if updated == original:
         return {"status": "ok", "path": path.relative_to(root).as_posix(), "changed": False}
-    temporary = path.with_name(f".{module_name}.agent-{secrets.token_hex(8)}")
+    temporary = path.with_name(f".{path.name}.agent-{secrets.token_hex(8)}")
     try:
         temporary.write_text(updated, encoding="utf-8", newline="")
         os.chmod(temporary, path.stat().st_mode & 0o777)

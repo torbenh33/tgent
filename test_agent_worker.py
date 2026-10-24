@@ -52,6 +52,20 @@ def test_edit_applies_ordered_exact_replacements_atomically(tmp_path: Path) -> N
     assert source.read_text(encoding="utf-8") == "first\nsecond\n"
 
 
+def test_edit_uses_target_filename_for_atomic_temporary_file(tmp_path: Path) -> None:
+    source = tmp_path / "file.txt"
+    source.write_text("before\n", encoding="utf-8")
+
+    result = _edit_file(
+        tmp_path,
+        {"path": "file.txt", "replacements": [{"search": "before", "replace": "after"}]},
+    )
+
+    assert result["changed"] is True
+    assert source.read_text(encoding="utf-8") == "after\n"
+    assert list(tmp_path.iterdir()) == [source]
+
+
 def test_edit_rejects_missing_or_ambiguous_match_without_partial_write(tmp_path: Path) -> None:
     source = tmp_path / "file.txt"
     original = "alpha\nalpha\n"
