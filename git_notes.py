@@ -81,8 +81,8 @@ def get_sha1_for_path(pathname: str) -> str | None:
     Returns the SHA-1 string on success, or None if the file is not tracked or an error occurs.
 
     >>> # NOTE: These tests require the current directory to be a valid Git repository.
-    >>> # Assuming 'test_fixture.txt' exists and is tracked in the current git repo state.
-    >>> isinstance(get_sha1_for_path("test_fixture.txt"), (str, type(None)))
+    >>> # Assuming 'docs/test_fixture.txt' exists and is tracked in the current git repo state.
+    >>> isinstance(get_sha1_for_path("docs/test_fixture.txt"), (str, type(None)))
     True
 
     >>> # Assuming 'nonexistent/file.txt' is not tracked or does not exist.
@@ -105,14 +105,14 @@ def add_git_note_for_path(pathname: str, note_content: str) -> bool:
     Adds a git note to the blob referenced by a repository-relative file path.
     Returns False if the path cannot be resolved.
 
-    >>> # Assuming 'test_fixture.txt' exists, is tracked, and git notes are enabled.
-    >>> add_git_note_for_path("test_fixture.txt", "Summary note")
+    >>> # Assuming 'docs/test_fixture.txt' exists, is tracked, and git notes are enabled.
+    >>> add_git_note_for_path("docs/test_fixture.txt", "Summary note")
     True
 
     >>> # Setting a note again replaces the previous one.
-    >>> add_git_note_for_path("test_fixture.txt", "Updated summary note")
+    >>> add_git_note_for_path("docs/test_fixture.txt", "Updated summary note")
     True
-    >>> get_git_note_for_path("test_fixture.txt")
+    >>> get_git_note_for_path("docs/test_fixture.txt")
     'Updated summary note'
     """
     sha1 = get_sha1_for_path(pathname)
@@ -125,8 +125,8 @@ def git_note_exists_for_path(pathname: str) -> bool:
     """
     Checks whether a git note exists for the blob referenced by a repository-relative file path.
 
-    >>> # Assuming 'test_fixture.txt' exists and is tracked.
-    >>> git_note_exists_for_path("test_fixture.txt")
+    >>> # Assuming 'docs/test_fixture.txt' exists and is tracked.
+    >>> git_note_exists_for_path("docs/test_fixture.txt")
     True
     """
     sha1 = get_sha1_for_path(pathname)
@@ -141,8 +141,8 @@ def get_git_note_for_path(pathname: str) -> str | None:
     Returns the note content on success, or None if the path cannot be resolved
     or no note exists.
 
-    >>> # Assuming 'test_fixture.txt' exists and is tracked.
-    >>> isinstance(get_git_note_for_path("test_fixture.txt"), (str, type(None)))
+    >>> # Assuming 'docs/test_fixture.txt' exists and is tracked.
+    >>> isinstance(get_git_note_for_path("docs/test_fixture.txt"), (str, type(None)))
     True
 
     >>> # Assuming this path is not tracked.
