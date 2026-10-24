@@ -343,6 +343,88 @@ def export_patch_series(
         return {"status": "error", "message": f"Could not add patches to the review Maildir: {err}", "series_id": series_id}
     return {"status": "ok", "series_id": series_id, **revision}
 
+def import_patch_series(
+    raw: bytes,
+    *,
+    base: str,
+    submitted_head: str,
+    repo_path: str = ".",
+    series_id: str,
+    artifact_sha256: str,
+    paths: ReviewPaths = DEFAULT_PATHS,
+) -> dict[str, Any]:
+    """Validate and import a complete remote mbox into the normal review store.
+
+    The supplied cover letter is retained verbatim (and is therefore authored
+    by the remote agent); patch Message-IDs are not regenerated.
+    """
+    if len(raw) > 16 * 1024 * 1024:
+        return {"status": "error", "message": "Mbox exceeds 16 MiB limit."}
+    if not isinstance(submitted_head, str) or re.fullmatch(r"[0-9a-fA-F]{40,64}", submitted_head) is None:
+        return {"status": "error", "message": "Invalid submitted head identity."}
+    if not _safe_series_id(series_id) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256):
+        return {"status": "error", "message": "Invalid series identity or artifact digest."}
+    if hashlib.sha256(raw).hexdigest() != artifact_sha256:
+        return {"status": "error", "message": "Artifact digest mismatch."}
+    repo, error = _resolve_repo(repo_path)
+    if error or repo is None:
+        return {"status": "error", "message": error or "Invalid repository."}
+    base_sha, error = _commit(repo, base, "base")
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        messages = _parse_mbox(raw)
+    except (OSError, mailbox.Error, email.errors.MessageError) as err:
+        return {"status": "error", "message": f"Malformed mbox: {err}"}
+    if len(messages) < 2 or not all(_message_id(message) for message in messages):
+        return {"status": "error", "message": "Mbox must contain a cover letter and patches with Message-IDs."}
+    ids = [_message_id(message) for message in messages]
+    if len(set(ids)) != len(ids):
+        return {"status": "error", "message": "Mbox contains duplicate Message-IDs."}
+    # Reconstruct in a private temporary clone, never touching the operator worktree.
+    with tempfile.TemporaryDirectory(prefix="tgit-remote-review-") as temporary:
+        clone = Path(temporary) / "repo"
+        proc = subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", repo, str(clone)], capture_output=True)
+        if proc.returncode:
+            return {"status": "error", "message": "Could not create isolated validation clone."}
+        for args in (["checkout", "--quiet", "--detach", base_sha],):
+            checkout = _git(str(clone), list(args))
+        patches = _serialize_mbox(messages[1:])
+        patch_file = Path(temporary) / "patches.mbox"
+        patch_file.write_bytes(patches)
+        applied = subprocess.run(["git", "-C", str(clone), "-c", "user.name=Review Import", "-c", "user.email=review@localhost", "am", "--committer-date-is-author-date", str(patch_file)], capture_output=True)
+        if checkout.returncode or applied.returncode:
+            return {"status": "error", "message": "Mbox does not apply cleanly to the declared base."}
+        reconstructed = _git(str(clone), ["rev-parse", "HEAD"])
+        if reconstructed.returncode or reconstructed.stdout.strip() == base_sha:
+            return {"status": "error", "message": "Mbox produced no reconstructed commits."}
+    _state_dirs(paths)
+    manifest, manifest_path = _load_manifest(series_id, paths)
+    if manifest is None:
+        directory = paths.series_root / series_id
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        manifest_path = directory / "manifest.json"
+        manifest = {"series_id": series_id, "repo_path": repo, "created_at": int(time.time()), "revisions": [], "acknowledged_review_ids": [], "remote_provenance": []}
+    if manifest.get("repo_path") != repo:
+        return {"status": "error", "message": "Series belongs to a different repository."}
+    provenance = manifest.setdefault("remote_provenance", [])
+    if any(item.get("artifact_sha256") == artifact_sha256 for item in provenance):
+        return {"status": "ok", "series_id": series_id, "revision": next((item["revision"] for item in manifest["revisions"] if item.get("artifact_sha256") == artifact_sha256), None), "idempotent": True}
+    revision_number = len(manifest["revisions"]) + 1
+    directory = manifest_path.parent
+    mbox_path = directory / f"v{revision_number}.mbox"
+    _atomic_write(mbox_path, raw)
+    revision = {"revision": revision_number, "base": base_sha, "head": submitted_head, "commit_count": len(messages)-1, "patch_message_ids": ids, "mbox_path": str(mbox_path), "artifact_sha256": artifact_sha256, "created_at": int(time.time())}
+    manifest["revisions"].append(revision)
+    provenance.append({"artifact_sha256": artifact_sha256, "submitted_head": submitted_head, "base": base_sha})
+    _write_manifest(manifest_path, manifest)
+    try:
+        _import_patches_to_maildir(messages, paths)
+    except (OSError, mailbox.Error) as err:
+        return {"status": "error", "message": f"Could not import mbox messages: {err}"}
+    return {"status": "ok", "series_id": series_id, **revision}
+
+
 def _known_patches(paths: ReviewPaths = DEFAULT_PATHS) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
     """Return patch Message-IDs and their owning series/revision records."""
     result: list[tuple[str, dict[str, Any], dict[str, Any]]] = []

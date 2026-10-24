@@ -199,6 +199,36 @@ async def reap_agent(agent_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def review_remote_agent(agent_id: str, artifact_directory: str) -> dict[str, Any]:
+    """Retrieve a complete remote mbox and import it into local review state.
+
+    The retained artifact is kept in ``artifact_directory`` for audit. Repeated
+    calls for the same artifact digest are idempotent.
+    """
+    remote = _remote_adapter()
+    if remote is None:
+        return {"status": "error", "message": "Remote review requires remote mode."}
+    metadata = await asyncio.to_thread(remote.patches, agent_id)
+    if metadata.get("available") is not True:
+        return {"status": "unavailable", "agent_id": agent_id}
+    artifact = await asyncio.to_thread(remote.retrieve_patch, agent_id, artifact_directory)
+    if artifact is None:
+        return {"status": "unavailable", "agent_id": agent_id}
+    import_review = getattr(importlib.import_module("mcp_tgit_review"), "import_patch_series")
+    import hashlib
+    raw = artifact.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != metadata.get("sha256"):
+        return {"status": "error", "message": "Retrieved artifact digest does not match remote metadata.", "artifact": str(artifact)}
+    result = await asyncio.to_thread(
+        import_review, raw, base=metadata.get("base_commit"),
+        submitted_head=metadata.get("submitted_head"), repo_path=str(_PROJECT_ROOT),
+        series_id=f"remote-{agent_id}", artifact_sha256=digest,
+    )
+    return {**result, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
+
+
+@mcp.tool()
 async def retrieve_agent_patch(agent_id: str, destination: str) -> dict[str, Any]:
     """Download a submitted remote patch artifact for local review.
 

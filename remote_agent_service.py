@@ -181,26 +181,33 @@ class RemoteAgentService:
         export = getattr(module, "export_patch_series", None)
         if not callable(export):
             raise RuntimeError("mcp_tgit_review.export_patch_series is unavailable")
-        result = await asyncio.to_thread(
-            export,
-            base=snapshot.base_commit,
-            head=params["head_commit"],
-            repo_path=str(snapshot.project_root),
-        )
+        export_kwargs = {
+            "base": snapshot.base_commit,
+            "head": params["head_commit"],
+            "repo_path": str(snapshot.project_root),
+        }
+        if "series_id" in inspect.signature(export).parameters:
+            export_kwargs["series_id"] = f"remote-{snapshot.root.name}"
+        result = await asyncio.to_thread(export, **export_kwargs)
         if not isinstance(result, dict) or result.get("status") != "ok":
             raise RuntimeError(f"Patch queue export failed: {result}")
 
-        patch = await asyncio.to_thread(
-            subprocess.run,
-            (
-                "git", "-C", str(snapshot.project_root), "format-patch",
-                "--binary", "--stdout", f"{snapshot.base_commit}..{params['head_commit']}",
-            ),
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
-        if len(patch.stdout) > 16 * 1024 * 1024:
+        # Transfer the complete series produced in the isolated snapshot,
+        # including its agent-authored cover letter and original Message-IDs.
+        mbox_name = result.get("mbox_path")
+        if isinstance(mbox_name, str):
+            mbox_path = Path(mbox_name)
+            patch_bytes = await asyncio.to_thread(mbox_path.read_bytes)
+        else:
+            # Compatibility for custom exporters predating the local series API;
+            # production mcp_tgit_review always provides its complete mbox.
+            legacy = await asyncio.to_thread(
+                subprocess.run,
+                ("git", "-C", str(snapshot.project_root), "format-patch", "--binary", "--stdout", f"{snapshot.base_commit}..{params['head_commit']}"),
+                check=True, capture_output=True, timeout=60,
+            )
+            patch_bytes = legacy.stdout
+        if len(patch_bytes) > 16 * 1024 * 1024:
             raise RuntimeError("Patch artifact exceeds 16 MiB limit")
         artifact_name = f"{snapshot.root.name}.patch"
         artifact_path = Path(str(self.config.patches_dir)) / artifact_name
@@ -208,14 +215,14 @@ class RemoteAgentService:
         descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             with os.fdopen(descriptor, "wb") as stream:
-                stream.write(patch.stdout)
+                stream.write(patch_bytes)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_path, artifact_path)
         except BaseException:
             temporary_path.unlink(missing_ok=True)
             raise
-        return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch.stdout)}
+        return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch_bytes), "patch_sha256": __import__("hashlib").sha256(patch_bytes).hexdigest()}
 
     async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
         return await self.controller.start_agent(request, source_root=checkout)
@@ -264,6 +271,8 @@ class RemoteAgentService:
             "artifact": artifact_name,
             "bytes": artifact_path.stat().st_size,
             "submitted_head": metadata.get("submitted_head"),
+            "base_commit": metadata.get("base_commit"),
+            "sha256": __import__("hashlib").sha256(artifact_path.read_bytes()).hexdigest(),
         }
 
     async def _dispatch(self, message: object) -> dict[str, object]:
