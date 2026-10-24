@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import ssl
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -164,6 +165,7 @@ def read_runtime_manifest(path: str | os.PathLike[str]) -> RuntimeManifest:
 
 
 _SYSTEM_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin")
+_CA_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
 _SYSTEM_SYMLINKS = {
     "/bin": "usr/bin",
     "/sbin": "usr/sbin",
@@ -196,7 +198,17 @@ def build_runtime_layout(
         if any(_path_is_within(source, Path(system_dir)) for system_dir in _SYSTEM_DIRS):
             continue
         mounts.append(RuntimeMount(source, source))
-    names: set[str] = set()
+    ca_bundle = _CA_BUNDLE
+    try:
+        pem = ca_bundle.read_text(encoding="ascii")
+        certificate_der = ssl.PEM_cert_to_DER_cert(
+            pem[pem.index("-----BEGIN CERTIFICATE-----"):pem.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")]
+        ) if "-----BEGIN CERTIFICATE-----" in pem and "-----END CERTIFICATE-----" in pem else None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SandboxError(f"Cannot read or parse system CA bundle {ca_bundle}: {exc}") from exc
+    if not pem.strip() or not certificate_der:
+        raise SandboxError(f"System CA bundle is empty or contains no certificate: {ca_bundle}")
+    mounts.append(RuntimeMount(ca_bundle.resolve(strict=True), ca_bundle))
     for raw_file in runtime_files:
         source = Path(raw_file).expanduser().resolve(strict=True)
         if not source.is_file():

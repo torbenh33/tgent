@@ -68,6 +68,18 @@ def test_builds_isolated_project_command_and_defaults_to_no_network(tmp_path: Pa
     assert result.project_path == project
 
 
+def test_runtime_layout_includes_host_ca_bundle_when_available(monkeypatch, tmp_path: Path) -> None:
+    bundle = tmp_path / "ca-certificates.crt"
+    bundle.write_text("trusted roots", encoding="ascii")
+    monkeypatch.setattr("agent_sandbox._CA_BUNDLE", bundle)
+
+    from agent_sandbox import build_runtime_layout
+    layout = build_runtime_layout()
+
+    mount = next(item for item in layout.mounts if item.target == bundle)
+    assert mount.source == bundle.resolve()
+
+
 def test_mounts_trusted_runtime_directory_read_only_at_original_path(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

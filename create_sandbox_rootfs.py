@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import ssl
 import stat
 import subprocess
 import tempfile
@@ -26,7 +25,6 @@ MAX_CONFIG_SIZE = 1024 * 1024
 SUITE_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 ARCHITECTURE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PACKAGE_NAME = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
-CA_BUNDLE_PATH = Path("/etc/ssl/certs/ca-certificates.crt")
 
 
 def _run(command: list[str]) -> None:
@@ -72,27 +70,6 @@ def _validate_plan(
     return clean_packages, preferences
 
 
-def validate_ca_bundle(path: Path) -> None:
-    """Require a non-empty PEM bundle containing parseable certificates."""
-    try:
-        content = path.read_text(encoding="ascii")
-    except (OSError, UnicodeError) as exc:
-        raise RuntimeError(f"Cannot read CA bundle {path}: {exc}") from exc
-    certificates = re.findall(
-        r"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\s]+?)\s+-----END CERTIFICATE-----",
-        content,
-    )
-    if not content.strip() or not certificates:
-        raise RuntimeError(f"CA bundle is empty or contains no PEM certificates: {path}")
-    try:
-        for certificate in certificates:
-            ssl.PEM_cert_to_DER_cert(
-                "-----BEGIN CERTIFICATE-----\n" + certificate + "\n-----END CERTIFICATE-----\n"
-            )
-    except ValueError as exc:
-        raise RuntimeError(f"CA bundle contains an invalid PEM certificate: {path}") from exc
-
-
 def validate_target(target: Path) -> None:
     if target == Path("/"):
         raise RuntimeError("Refusing to use / as the rootfs target.")
@@ -133,9 +110,6 @@ def create_sandbox_rootfs(
         clean_packages, clean_preferences = _validate_plan(
             target_path, suite, architecture, packages, sources_list, preferences
         )
-        # mmdebstrap builds Debian rootfs images; explicitly install system trust roots.
-        if "ca-certificates" not in clean_packages:
-            clean_packages.append("ca-certificates")
         with tempfile.TemporaryDirectory(prefix="sandbox-rootfs-apt-") as temp_dir:
             temp_path = Path(temp_dir)
             sources_path = temp_path / "sources.list"
@@ -162,7 +136,6 @@ def create_sandbox_rootfs(
             command.extend([suite, str(target_path)])
             _run(command)
 
-        validate_ca_bundle(target_path / CA_BUNDLE_PATH.relative_to("/"))
         resolver = target_path / "etc/resolv.conf"
         if resolver.is_symlink():
             resolver.unlink()
