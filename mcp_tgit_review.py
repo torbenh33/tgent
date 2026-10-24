@@ -530,8 +530,7 @@ def list_review_series(repo_path: str = ".") -> dict[str, Any]:
     return {"status": "ok", "repo_path": repo, "series": result}
 
 
-@mcp.tool()
-def get_review_replies(repo_path: str = ".", unacknowledged_only: bool = False) -> dict[str, Any]:
+def _get_review_replies(repo_path: str = ".", unacknowledged_only: bool = False) -> dict[str, Any]:
     """Return captured replies across all review series for one Git repository.
 
     Reporting is read-only: it does not acknowledge replies or mark comments
@@ -555,6 +554,12 @@ def get_review_replies(repo_path: str = ".", unacknowledged_only: bool = False) 
     return {"status": "ok", "repo_path": repo, "review_count": len(reviews),
             "unacknowledged_count": sum(not item["acknowledged"] for item in reviews),
             "reviews": reviews}
+
+
+@mcp.tool()
+def get_review_replies(repo_path: str = ".", unacknowledged_only: bool = False) -> dict[str, Any]:
+    """Return captured replies across all review series for one Git repository."""
+    return _get_review_replies(repo_path, unacknowledged_only)
 
 
 @mcp.tool()

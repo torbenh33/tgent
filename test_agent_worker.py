@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import asyncio
+
 import pytest
 
 from agent_worker import AgentWorker, WorkerError, _edit_file, _read_file, _resolve_project_file, _search_files
@@ -97,8 +99,7 @@ def test_search_files_returns_bounded_line_matches(tmp_path: Path) -> None:
     assert all(item["path"] in {"a.py", "b.py"} for item in result["matches"])
 
 
-@pytest.mark.asyncio
-async def test_child_uses_isolated_snapshot_and_cannot_spawn() -> None:
+def test_child_uses_isolated_snapshot_and_cannot_spawn() -> None:
     class Client:
         requests = []
 
@@ -110,7 +111,7 @@ async def test_child_uses_isolated_snapshot_and_cannot_spawn() -> None:
     worker = AgentWorker(client, Path("."), "agent")  # type: ignore[arg-type]
     worker.history = [{"role": "user", "content": "parent"}]
 
-    result = await worker._run_child("summarize")
+    result = asyncio.run(worker._run_child("summarize"))
 
     assert result == "summary"
     assert worker.history == [{"role": "user", "content": "parent"}]

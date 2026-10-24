@@ -26,8 +26,8 @@ class BulkReviewReportTests(unittest.TestCase):
                 {"series_id": "other-repo", "review_id": "r3", "acknowledged": False},
             ]
             with patch.object(review, "SERIES_ROOT", series_root), patch.object(review, "_resolve_repo", return_value=(str(repo), None)), patch.object(review, "_reviews", return_value=replies):
-                result = review.get_review_replies(str(repo))
-                filtered = review.get_review_replies(str(repo), unacknowledged_only=True)
+                result = review._get_review_replies(str(repo))
+                filtered = review._get_review_replies(str(repo), unacknowledged_only=True)
             self.assertEqual(result["review_count"], 2)
             self.assertEqual(result["unacknowledged_count"], 1)
             self.assertEqual([item["review_id"] for item in result["reviews"]], ["r1", "r2"])

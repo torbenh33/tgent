@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from importlib.metadata import EntryPoint, EntryPoints
+from unittest.mock import patch
 
 from agent_controller import AgentController, AgentControllerError
 
@@ -84,14 +86,16 @@ async def test_agent_tool_allowlist_is_operator_set_and_worker_read_only(tmp_pat
         "agent": type("Runtime", (), {"process": type("Process", (), {"returncode": None})()})()
     }
 
-    assert await controller._get_tool_allowlist("agent", {}) == {"tools": []}
-    assert await controller.set_agent_tools("agent", ["mcp_example"]) == {
-        "agent_id": "agent", "tools": ["mcp_example"]
-    }
-    assert await controller._get_tool_allowlist("agent", {}) == {"tools": ["mcp_example"]}
-    for tools in (["mcp_agent"], ["mcp_missing"], ["../mcp_example"], ["mcp_example", "mcp_example"]):
-        with pytest.raises(AgentControllerError):
-            await controller.set_agent_tools("agent", tools)
+    entry_points = [EntryPoint(name="mcp_example", value="mcp_example:mcp", group="tgit_agent.mcp_servers")]
+    with patch("agent_controller.importlib.metadata.entry_points", return_value=EntryPoints(entry_points)):
+        assert await controller._get_tool_allowlist("agent", {}) == {"tools": []}
+        assert await controller.set_agent_tools("agent", ["mcp_example"]) == {
+            "agent_id": "agent", "tools": ["mcp_example"]
+        }
+        assert await controller._get_tool_allowlist("agent", {}) == {"tools": ["mcp_example"]}
+        for tools in (["mcp_agent"], ["mcp_missing"], ["../mcp_example"], ["mcp_example", "mcp_example"]):
+            with pytest.raises(AgentControllerError):
+                await controller.set_agent_tools("agent", tools)
 
 
 @pytest.mark.anyio

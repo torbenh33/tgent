@@ -406,21 +406,11 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
         text=True,
     ).stdout.strip()
     agent_id = snapshot.root.name
-    exported: list[tuple[object, ...]] = []
-
-    def export_patch_series(*, base, head, repo_path):
-        exported.append((base, head, repo_path))
-        return {"status": "ok", "commits": [head]}
-
-    monkeypatch.setitem(
-        sys.modules,
-        "mcp_tgit_review",
-        SimpleNamespace(export_patch_series=export_patch_series),
-    )
     result = asyncio.run(
         service._submit_patch(snapshot, {"base_commit": base_commit, "head_commit": head_commit})
     )
-    assert exported == [(base_commit, head_commit, str(snapshot.project_root))]
+    assert result["base"] == base_commit
+    assert result["head"] == head_commit
     assert result["patch_artifact"] == f"{agent_id}.patch"
     assert result["patch_bytes"] > 0
     service.controller.store.create(

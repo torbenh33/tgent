@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import patch
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -275,7 +277,7 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
     assert client.history[-1]["content"] == "Review feedback addressed."
 
 
-def test_worker_discovers_mcp_tools_through_allowlist_rpc(tmp_path: Path) -> None:
+def test_worker_discovers_mcp_tools_through_allowlist_rpc(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "mcp_demo.py").write_text(
         """
 from types import SimpleNamespace
@@ -310,11 +312,14 @@ mcp = FakeMCP()
             assert method == "agent.tools.get"
             return {"tools": ["mcp_demo"]}
 
+    monkeypatch.syspath_prepend(str(tmp_path))
     client = AllowlistClient()
     worker = AgentWorker(client=client, root=tmp_path, agent_id="agent")  # type: ignore[arg-type]
+    entry_point = SimpleNamespace(name="mcp_demo", load=lambda: __import__("mcp_demo").mcp)
 
     async def exercise() -> None:
-        await worker._discover_mcp_tools()
+        with patch("agent_worker.importlib.metadata.entry_points", return_value=SimpleNamespace(select=lambda **_kwargs: [entry_point])):
+            await worker._discover_mcp_tools()
         assert client.methods == ["agent.tools.get", "agent.tools.report"]
         assert client.reported_catalog[0]["name"] == "mcp_demo"
         assert [tool["name"] for tool in client.reported_catalog[0]["items"]] == ["echo"]
