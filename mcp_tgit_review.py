@@ -286,7 +286,7 @@ def export_patch_series(
         repo,
         [
             "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter",
-            "--add-header", f"Reply-To: {reply_to_address}", f"{base_sha}..{head_sha}",
+            f"{base_sha}..{head_sha}",
         ],
     )
     if exported.returncode:
@@ -302,6 +302,14 @@ def export_patch_series(
         patches = _parse_mbox(raw)
     except (OSError, mailbox.Error, email.errors.MessageError) as err:
         return {"status": "error", "message": f"Could not parse generated mbox: {err}"}
+
+    # --add-header is not reliably applied to Git’s generated cover letter.
+    # Explicitly set it on every message so replies to the summary are captured.
+    for patch in patches:
+        if patch.get("Reply-To"):
+            patch.replace_header("Reply-To", reply_to_address)
+        else:
+            patch["Reply-To"] = reply_to_address
 
     if cover_letter:
         title, separator, body = cover_letter.strip().partition("\n")
