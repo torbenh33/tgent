@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -153,17 +152,23 @@ async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
 
 @mcp.tool()
 async def summarize_agent_history(agent_id: str) -> str:
-    """Summarize conversation with the configured LLM; use get_agent_history for full debugging detail."""
-    history = await get_agent_history(agent_id)
+    """Summarize using the controller-side LLM (remote service LLM in remote mode)."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.summarize_history, agent_id)
+    history = await _controller().get_history(agent_id)
+    import json
+    prompt_history = json.dumps(history[-200:], ensure_ascii=False)[-100_000:]
     response = await _get_llm().model_callback({"messages": [
         {"role": "system", "content": "Summarize this coding agent conversation for an operator: task, key actions and decisions, outcome, unresolved issues, and evidence. Be concise and distinguish facts from uncertainty."},
-        {"role": "user", "content": json.dumps(history, ensure_ascii=False)},
+        {"role": "user", "content": prompt_history},
     ], "max_tokens": 1200})
     try:
-        return response["choices"][0]["message"]["content"] or ""
+        content = response["choices"][0]["message"]["content"]
+        if not isinstance(content, str): raise TypeError("content is not text")
+        return content
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("LLM returned an invalid conversation summary response") from exc
-
 
 @mcp.tool()
 async def continue_agent(agent_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:

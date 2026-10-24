@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents", "set_tools", "agent_tools"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "list_agents", "set_tools", "agent_tools", "summarize_history"})
 
 
 class RemoteProtocolError(ValueError):
@@ -64,6 +64,7 @@ def validate_request(value: object) -> dict[str, object]:
         "list_agents": common,
         "set_tools": common | {"agent_id", "tools"},
         "agent_tools": common | {"agent_id"},
+        "summarize_history": common | {"agent_id"},
     }
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")

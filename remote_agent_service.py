@@ -125,6 +125,7 @@ class RemoteAgentService:
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
                 "agent_tools": self._agent_tools,
+                "summarize_history": self._summarize_history,
             },
         )
         self.socket_path = Path(str(config.state_dir)) / "remote-agent.sock"
@@ -212,6 +213,20 @@ class RemoteAgentService:
     async def _history(self, request):
         history = await self.controller.get_history(request["agent_id"])
         return {"agent_id": request["agent_id"], "messages": history[-request["limit"]:]}
+
+    async def _summarize_history(self, request):
+        history = await self.controller.get_history(request["agent_id"])
+        encoded = json.dumps(history[-200:], ensure_ascii=False)[-100_000:]
+        response = await self._get_llm().model_callback({"messages": [
+            {"role": "system", "content": "Summarize this coding agent conversation for an operator: task, key actions and decisions, outcome, unresolved issues, and evidence. Be concise and distinguish facts from uncertainty."},
+            {"role": "user", "content": encoded},
+        ], "max_tokens": 1200})
+        try:
+            content = response["choices"][0]["message"]["content"]
+            if not isinstance(content, str): raise TypeError("content is not text")
+            return {"summary": content}
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("LLM returned an invalid conversation summary response") from exc
 
     async def _continue(self, request):
         messages = [dict(message) for message in request["messages"]]

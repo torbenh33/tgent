@@ -107,6 +107,13 @@ class RemoteAgentAdapter:
         """Retrieve the most recent bounded remote conversation messages."""
         return self._request("history", agent_id=agent_id, limit=limit)
 
+    def summarize_history(self, agent_id: str) -> str:
+        """Summarize a remote conversation using the remote service LLM."""
+        result = self._request("summarize_history", agent_id=agent_id)
+        summary = result.get("summary")
+        if not isinstance(summary, str): raise RemoteAgentAdapterError("Remote history summary is invalid")
+        return summary
+
     def continue_agent(self, agent_id: str, messages: list[dict[str, object]]) -> dict[str, object]:
         """Append operator or review messages and resume a live remote agent."""
         return self._request("continue", agent_id=agent_id, messages=messages)
