@@ -8,6 +8,7 @@ and patch-submission callbacks rather than embedding project-specific policy.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import os
 import re
@@ -250,8 +251,8 @@ class AgentController:
             else load_project_config(selected_project_root)
         )
         agent_id = secrets.token_hex(16)
-        present_modules = {path.stem for path in Path(selected_project_root).glob("mcp_*.py") if path.is_file() and not path.is_symlink() and re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem)}
-        seeded = set(self.default_tool_modules) & present_modules
+        # MCP servers are installed entry points in the worker runtime, not project files.
+        seeded = set(self.default_tool_modules)
         self._tool_allowlists[agent_id] = seeded
         destination = self.snapshot_root / agent_id
         state = "starting"
@@ -420,9 +421,13 @@ class AgentController:
         runtime = self._runtimes.get(agent_id)
         if runtime is None or runtime.process.returncode is not None:
             raise AgentControllerError("Tools can only be changed for a live agent")
-        available = {path.stem for path in Path(metadata["snapshot_project"]).glob("mcp_*.py") if path.is_file() and not path.is_symlink() and re.fullmatch(r"mcp_[A-Za-z0-9_-]+", path.stem)}
+        available = {
+            entry_point.name
+            for entry_point in importlib.metadata.entry_points().select(group="tgit_agent.mcp_servers")
+            if re.fullmatch(r"mcp_[A-Za-z0-9_-]+", entry_point.name)
+        }
         if not set(tools) <= available:
-            raise AgentControllerError("Requested MCP module is not available in this agent project")
+            raise AgentControllerError("Requested MCP module is not installed in the agent runtime")
         self._tool_allowlists[agent_id] = set(tools)
         return {"agent_id": agent_id, "tools": sorted(tools)}
 
