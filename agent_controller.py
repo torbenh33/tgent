@@ -689,11 +689,11 @@ class AgentController:
 
     async def reap_agent(self, agent_id: str) -> dict[str, Any]:
         metadata = self.store.get_metadata(agent_id)
-        if metadata.get("state") not in {"stopped", "failed", "halted", "reaped"}:
-            raise AgentControllerError("Stop the agent before reaping it")
         runtime = self._runtimes.get(agent_id)
         if runtime is not None and runtime.process.returncode is None:
             raise AgentControllerError("Worker process is still running")
+        if metadata.get("state") not in {"stopped", "failed", "halted", "reaped"}:
+            raise AgentControllerError("Stop the agent before reaping it")
         snapshot_path = Path(metadata["snapshot_root"])
         if not snapshot_path.is_relative_to(self.snapshot_root):
             raise AgentControllerError("Recorded snapshot path is outside managed snapshot root")
