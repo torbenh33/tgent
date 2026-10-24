@@ -13,6 +13,7 @@ from typing import Any
 AGENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}\Z")
 METADATA_FILENAME = "metadata.json"
 HISTORY_FILENAME = "history.json"
+SUMMARY_FILENAME = "history_summary.json"
 
 
 class AgentStoreError(RuntimeError):
@@ -74,6 +75,28 @@ class AgentStore:
     def history_path(self, agent_id: str) -> Path:
         return self._agent_dir(agent_id) / HISTORY_FILENAME
 
+    def summary_path(self, agent_id: str) -> Path:
+        return self._agent_dir(agent_id) / SUMMARY_FILENAME
+
+    def get_cached_summary(self, agent_id: str) -> str | None:
+        """Return a summary only if it matches the current transcript version."""
+        path = self.summary_path(agent_id)
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            stat = self.history_path(agent_id).stat()
+            if data.get("history_mtime_ns") != stat.st_mtime_ns or data.get("history_size") != stat.st_size:
+                return None
+            return data["summary"] if isinstance(data.get("summary"), str) else None
+        except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+            return None
+
+    def cache_summary(self, agent_id: str, summary: str) -> None:
+        """Persist a summary tagged with the current history file version."""
+        stat = self.history_path(agent_id).stat()
+        _atomic_write(self.summary_path(agent_id), _json_bytes({"history_mtime_ns": stat.st_mtime_ns, "history_size": stat.st_size, "summary": summary}))
+
     def create(self, agent_id: str, metadata: dict[str, Any], history: list[dict[str, Any]]) -> None:
         """Create an agent record once; refuse to overwrite an existing ID."""
         agent_dir = self._agent_dir(agent_id)
@@ -130,6 +153,7 @@ class AgentStore:
         history = self.get_history(agent_id)
         history.extend(messages)
         _atomic_write(self.history_path(agent_id), _json_bytes(history))
+        self.summary_path(agent_id).unlink(missing_ok=True)
         return history
 
     def remove(self, agent_id: str) -> None:

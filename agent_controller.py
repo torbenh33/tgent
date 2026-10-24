@@ -573,7 +573,9 @@ class AgentController:
             if entry.name == "logs" or entry.is_symlink() or not entry.is_dir():
                 continue
             try:
-                agents.append(self.store.get_metadata(entry.name))
+                metadata = self.store.get_metadata(entry.name)
+                metadata["history_summary"] = self.store.get_cached_summary(entry.name)
+                agents.append(metadata)
             except (AgentStoreError, OSError):
                 continue
         agents.sort(key=lambda metadata: (metadata.get("created_at", 0), metadata.get("agent_id", "")))

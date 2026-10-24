@@ -90,3 +90,12 @@ def test_remove_state_only_after_explicit_call(tmp_path: Path) -> None:
 
     assert not history_path.exists()
     assert not (tmp_path / "state" / "agent").exists()
+
+
+def test_cached_summary_is_invalidated_when_history_changes(tmp_path: Path) -> None:
+    store = AgentStore(tmp_path / "state")
+    store.create("agent", {}, [{"role": "user", "content": "task"}])
+    store.cache_summary("agent", "summary")
+    assert store.get_cached_summary("agent") == "summary"
+    store.append_history("agent", [{"role": "assistant", "content": "done"}])
+    assert store.get_cached_summary("agent") is None

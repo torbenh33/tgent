@@ -156,7 +156,11 @@ async def summarize_agent_history(agent_id: str) -> str:
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.summarize_history, agent_id)
-    history = await _controller().get_history(agent_id)
+    controller = _controller()
+    cached = controller.store.get_cached_summary(agent_id)
+    if cached is not None:
+        return cached
+    history = await controller.get_history(agent_id)
     import json
     prompt_history = json.dumps(history[-200:], ensure_ascii=False)[-100_000:]
     response = await _get_llm().model_callback({"messages": [
@@ -166,6 +170,7 @@ async def summarize_agent_history(agent_id: str) -> str:
     try:
         content = response["choices"][0]["message"]["content"]
         if not isinstance(content, str): raise TypeError("content is not text")
+        controller.store.cache_summary(agent_id, content)
         return content
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("LLM returned an invalid conversation summary response") from exc

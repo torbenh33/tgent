@@ -34,7 +34,7 @@ The MCP server uses the directory from which it is launched as its project root.
 
 1. Launch the controller from a Git project and configure its model endpoint and tool allowlist.
 2. Use the `start_agent` tool with a request containing `schema_version: 1` and a task; optional fields include a name, history and limits.
-3. Check agent status and retrieve its results through the controller tools/resources.
+3. Call `list_remote_agents` for all agent metadata plus the cached `history_summary` field (null until summarized); call `summarize_agent_history` on demand. Cached summaries are persisted per agent and invalidated automatically whenever history is appended.
 4. Review the generated commits/patch series before applying them to the main project.
 
 ## Tests
