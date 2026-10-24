@@ -83,7 +83,29 @@ def test_search_files_returns_bounded_line_matches(tmp_path: Path) -> None:
     assert all(item["path"] in {"a.py", "b.py"} for item in result["matches"])
 
 
-def test_model_api_messages_strip_copilotchat_metadata_but_history_is_untouched() -> None:
+@pytest.mark.asyncio
+async def test_child_uses_isolated_snapshot_and_cannot_spawn() -> None:
+    class Client:
+        requests = []
+
+        async def request(self, method, params):
+            self.requests.append((method, params))
+            return {"choices": [{"message": {"content": "summary"}}]}
+
+    client = Client()
+    worker = AgentWorker(client, Path("."), "agent")  # type: ignore[arg-type]
+    worker.history = [{"role": "user", "content": "parent"}]
+
+    result = await worker._run_child("summarize")
+
+    assert result == "summary"
+    assert worker.history == [{"role": "user", "content": "parent"}]
+    request = client.requests[0][1]
+    assert request["messages"][-1]["content"].endswith("summarize")
+    assert "delegate_context_task" not in [tool["function"]["name"] for tool in request["tools"]]
+    assert not hasattr(worker, "_adopt_child_history")
+
+
     transcript = [
         {"role": "user", "content": "task", "id": "message-id", "model": "ui-model", "reasoning": "private"},
         {

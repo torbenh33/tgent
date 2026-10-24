@@ -23,8 +23,11 @@ MAX_CONTEXT_MESSAGES = 120
 MAX_CONTEXT_BYTES = 1_000_000
 MAX_COMMAND_TIMEOUT_SECONDS = 120
 MAX_TOOL_CALLS_PER_TURN = 32
+MAX_CHILD_MODEL_CALLS = 12
+MAX_CHILD_TASK_CHARS = 20_000
 
 TOOLS: list[dict[str, Any]] = [
+    {"type": "function", "function": {"name": "delegate_context_task", "description": "Run a bounded one-level task against a conversation snapshot; returns text without changing parent history.", "parameters": {"type": "object", "properties": {"task": {"type": "string", "minLength": 1, "maxLength": MAX_CHILD_TASK_CHARS}}, "required": ["task"], "additionalProperties": False}}},
     {
         "type": "function",
         "function": {
@@ -330,6 +333,7 @@ class AgentWorker:
         self.model: str | None = None
         self.dynamic_tools: dict[str, tuple[Any, str, str, str | None, tuple[str, ...]]] = {}
         self.available_tools = list(TOOLS)
+        self._is_child = False
 
     async def _discover_mcp_tools(self) -> None:
         """Load explicitly registered installed servers; do not trust project files."""
@@ -522,7 +526,47 @@ class AgentWorker:
             raise WorkerError("Controller did not confirm transcript persistence")
         self.history.extend(messages)
 
+    async def _run_child(self, task: Any) -> str:
+        """Run a bounded synchronous child on a detached snapshot."""
+        if self._is_child:
+            raise WorkerError("Child agents cannot create child agents")
+        if not isinstance(task, str) or not task.strip() or len(task) > MAX_CHILD_TASK_CHARS:
+            raise WorkerError(f"task must contain 1 to {MAX_CHILD_TASK_CHARS} characters")
+        child = AgentWorker(self.client, self.root, self.agent_id)
+        child._is_child = True
+        child.dynamic_tools = self.dynamic_tools.copy()
+        child.available_tools = [tool for tool in self.available_tools if tool["function"]["name"] != "delegate_context_task"]
+        child.history = json.loads(json.dumps(self.history, ensure_ascii=False))
+        child.history.append({"role": "user", "content": "Child task; return a concise plain-text result:\\n" + task})
+        for _ in range(MAX_CHILD_MODEL_CALLS):
+            completion = await self.client.request("model.complete", {"messages": child._api_messages(child.history), "tools": child.available_tools, "tool_choice": "auto"})
+            choices = completion.get("choices") if isinstance(completion, dict) else None
+            message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+            if not isinstance(message, dict):
+                raise WorkerError("Child received an invalid model completion")
+            calls = message.get("tool_calls")
+            if isinstance(calls, list) and calls:
+                if len(calls) > MAX_TOOL_CALLS_PER_TURN:
+                    raise WorkerError("Child returned too many tool calls")
+                child.history.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
+                for call in calls:
+                    function = call.get("function", {}) if isinstance(call, dict) else {}
+                    name = function.get("name")
+                    try:
+                        args = json.loads(function.get("arguments", "{}"))
+                        if name == "delegate_context_task":
+                            raise WorkerError("Child agents cannot create child agents")
+                        result = await child._execute_tool(name, args)
+                    except Exception as err:
+                        result = {"status": "error", "message": str(err)}
+                    child.history.append({"role": "tool", "tool_call_id": call.get("id", "child"), "content": _format_tool_result(result)})
+                continue
+            return message.get("content") if isinstance(message.get("content"), str) else ""
+        raise WorkerError(f"Child exceeded {MAX_CHILD_MODEL_CALLS} model calls")
+
     async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name == "delegate_context_task":
+            return await self._run_child(arguments.get("task"))
         if name in self.dynamic_tools:
             return await self._call_discovered_tool(name, arguments)
         if name == "read_file":
