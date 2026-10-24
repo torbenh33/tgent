@@ -177,7 +177,11 @@ async def summarize_agent_history(agent_id: str) -> str:
 
 @mcp.tool()
 async def continue_agent(agent_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Append operator or review messages and resume a live waiting agent."""
+    """Append messages to a live waiting agent, or recover an inactive halted/stopped agent as a new child from its saved history and project snapshot.
+
+    Inactive agents with submitted patches, awaiting_review/review_received, failed,
+    or reaped states cannot be recovered; use review workflows for submitted work.
+    """
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.continue_agent, agent_id, messages)

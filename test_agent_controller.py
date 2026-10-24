@@ -134,10 +134,11 @@ async def test_tool_allowlist_rejects_terminal_agent(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_continue_inactive_halted_agent_starts_child_from_snapshot(tmp_path) -> None:
+@pytest.mark.parametrize("state", ["halted", "stopped"])
+async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, state) -> None:
     class Store:
         def get_metadata(self, _agent_id):
-            return {"agent_id": "old", "state": "halted", "snapshot_root": str(snapshot_root),
+            return {"agent_id": "old", "state": state, "snapshot_root": str(snapshot_root),
                     "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
 
         def get_history(self, _agent_id):
@@ -167,6 +168,30 @@ async def test_continue_inactive_halted_agent_starts_child_from_snapshot(tmp_pat
         {"role": "user", "content": "original"}, {"role": "user", "content": "more"}
     ]
     assert calls[0][1] == snapshot_project
+
+
+@pytest.mark.anyio
+async def test_continue_stopped_agent_rejects_missing_or_unsafe_snapshot(tmp_path) -> None:
+    class Store:
+        def __init__(self, root, project):
+            self.root, self.project = root, project
+
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": "stopped", "snapshot_root": str(self.root),
+                    "snapshot_project": str(self.project), "submitted_head": None}
+
+        def get_history(self, _agent_id):
+            return []
+
+    snapshots = tmp_path / "snapshots"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    controller = AgentController.__new__(AgentController)
+    controller.snapshot_root = snapshots
+    controller._runtimes = {}
+    controller.store = Store(snapshots / "old", outside)
+    with pytest.raises(AgentControllerError, match="snapshot"):
+        await controller.continue_agent("old", [{"role": "user", "content": "more"}])
 
 
 @pytest.mark.parametrize("name", ["", "  ", "x" * 101, "bad\nname", 7])
