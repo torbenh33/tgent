@@ -68,6 +68,16 @@ def test_builds_isolated_project_command_and_defaults_to_no_network(tmp_path: Pa
     assert result.project_path == project
 
 
+def test_runtime_layout_skips_missing_host_ca_bundle(monkeypatch, tmp_path: Path) -> None:
+    missing_bundle = tmp_path / "missing-ca-bundle.crt"
+    monkeypatch.setattr("agent_sandbox._CA_BUNDLE", missing_bundle)
+
+    from agent_sandbox import build_runtime_layout
+    layout = build_runtime_layout()
+
+    assert all(item.target != missing_bundle for item in layout.mounts)
+
+
 def test_runtime_layout_includes_host_ca_bundle_when_available(monkeypatch, tmp_path: Path) -> None:
     bundle = tmp_path / "ca-certificates.crt"
     bundle.write_text("trusted roots", encoding="ascii")
