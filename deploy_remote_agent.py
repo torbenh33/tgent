@@ -83,7 +83,14 @@ def _render_unit(config) -> str:
 
 
 def _ssh(config, *remote_argv: str, check: bool = True) -> subprocess.CompletedProcess:
-    command = " ".join(shlex.quote(argument) for argument in remote_argv)
+    # SSH executes this as a remote shell command. Keep explicit control
+    # operators unquoted while quoting every argument so the shell parses
+    # compound commands such as ``if ... ; then ... ; fi`` correctly.
+    shell_operators = {";", "&&", "||", "|", "||", "<", ">", "2>/dev/null"}
+    command = " ".join(
+        argument if argument in shell_operators else shlex.quote(argument)
+        for argument in remote_argv
+    )
     return subprocess.run(("ssh", config.ssh_host, command), check=check)
 
 
@@ -94,10 +101,11 @@ def deploy_remote_agent(
     skip_rootfs: bool = False,
     install_project: bool = False,
 ) -> None:
-    """Deploy and validate one complete app environment before service activation.
+    """Install locally, synchronize the app and runtime, then activate the service.
 
-    ``install_project`` is retained for CLI compatibility; the synchronized
-    checkout is always installed as a non-editable package.
+    When ``install_project`` is enabled, install this checkout into the local
+    Python environment before synchronizing it. The environment is transferred
+    with the checkout; deployment does not create or install a remote venv.
     """
     config = load_remote_agent_config(config_path)
     project_root = Path(__file__).resolve().parent
@@ -117,16 +125,22 @@ def deploy_remote_agent(
     for pattern in _RSYNC_EXCLUDES:
         rsync_argv.extend(("--exclude", pattern))
     rsync_argv.extend(("--", os.fspath(project_root) + "/", f"{config.ssh_host}:{shlex.quote(str(staging_dir))}/"))
+    if install_project:
+        subprocess.run((sys.executable, "-m", "pip", "install", os.fspath(project_root)), check=True)
     subprocess.run(tuple(rsync_argv), check=True)
 
-    _ssh(config, "if", "test", "-d", str(app_dir), ";", "then", "mv", "--", str(app_dir), str(backup_dir), ";", "fi")
+    _ssh(
+        config,
+        "sh",
+        "-c",
+        'if test -d "$1"; then mv -- "$1" "$2"; fi',
+        "sh",
+        str(app_dir),
+        str(backup_dir),
+    )
     _ssh(config, "mv", "--", str(staging_dir), str(app_dir))
-    # Create venv only after promotion: its scripts and pyvenv metadata bind to
-    # this exact final path and cannot be safely relocated from a staging name.
     prepare_remote_runtime(config, rsync=rsync)
-    _ssh(config, "python3", "-m", "venv", str(app_dir))
-    _ssh(config, str(app_dir / "bin/python"), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "--editable", str(app_dir))
-    _ssh(config, str(app_dir / "bin/python"), "-c", "import agent_worker, remote_agent_service")
+    _ssh(config, str(app_dir / ".venv/bin/python"), "-c", "import agent_worker, remote_agent_service")
 
     rendered = _render_unit(config)
     with tempfile.TemporaryDirectory(prefix="tgent-unit-") as temporary_dir:

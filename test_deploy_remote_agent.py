@@ -90,9 +90,12 @@ def test_self_hosted_mode_refreshes_checkout_package_before_runtime(tmp_path: Pa
         lambda argv, **_kwargs: calls.append(tuple(str(part) for part in argv)) or subprocess.CompletedProcess(argv, 0),
     )
     deployment.deploy_remote_agent(config_path=config_path, install_project=True)
-    installer = next(call for call in calls if call[0] == "ssh" and "pip" in call[2])
-    assert "--no-deps" in installer[2]
-    assert "--editable /srv/tgent/app" in installer[2]
+    installer = next(call for call in calls if call[0] == deployment.sys.executable)
+    sync = next(call for call in calls if call[0] == "rsync" and "--delete" in call)
+    assert installer[1:4] == ("-m", "pip", "install")
+    assert installer[-1] == str(Path(deployment.__file__).resolve().parent)
+    assert calls.index(installer) < calls.index(sync)
+    assert not any(call[0] == "ssh" and "pip" in call[2] for call in calls)
 
 
 def test_deploy_skip_rootfs_keeps_rootfs_unmodified_but_deploys_agent_and_runtime(
