@@ -335,12 +335,14 @@ async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str
     Requires a clean repository and an existing patch file. Empty messages in
     the mbox, such as format-patch cover letters, are dropped; non-empty patch
     failures remain errors and may leave a Git am session requiring recovery.
-    Pass agent_id for a remote submission; successful application stops that agent.
+    Pass agent_id for a remote submission; successful application stops it via the configured remote adapter. Local agents are not stopped by this tool.
     """
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
     if not isinstance(patch_path, str) or not patch_path.strip():
         return {"status": "error", "message": "patch_path must be provided."}
+    if agent_id is not None and (not isinstance(agent_id, str) or not agent_id):
+        return {"status": "error", "message": "agent_id must be a non-empty agent identifier."}
 
     target_repo = _resolve_repo_path(repo_path)
     if not os.path.isfile(patch_path):
@@ -364,8 +366,6 @@ async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str
         }
     result = {"status": "ok", "repo_path": target_repo, "patch_path": patch_path, "stdout": proc.stdout}
     if agent_id is not None:
-        if not isinstance(agent_id, str) or not agent_id:
-            return {"status": "error", "message": "agent_id must be a non-empty agent identifier."}
         try:
             import asyncio
             import mcp_agent
@@ -373,7 +373,7 @@ async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str
             if remote is not None:
                 result["agent_stop"] = await asyncio.to_thread(remote.stop, agent_id)
             else:
-                result["agent_stop"] = await mcp_agent.stop_agent(agent_id)
+                result["agent_stop"] = {"status": "skipped", "message": "Local agent lifecycle is not coupled to patch application."}
         except Exception as err:
             result["agent_stop"] = {"status": "error", "message": str(err)}
     return result
