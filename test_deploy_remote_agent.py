@@ -75,6 +75,25 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
     assert unit_sync[-1] == "beep:.config/systemd/user/tgent-remote-agent.service"
 
 
+def test_self_hosted_mode_refreshes_checkout_package_before_runtime(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "remote-agent.toml"
+    config_path.write_text(
+        'ssh_host = "beep"\nremote_base_dir = "/srv/tgent"\n', encoding="utf-8"
+    )
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(deployment, "prepare_remote_runtime", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        deployment.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(tuple(str(part) for part in argv)) or subprocess.CompletedProcess(argv, 0),
+    )
+    deployment.deploy_remote_agent(config_path=config_path, install_project=True)
+    installer = next(call for call in calls if call[0] == "ssh" and "pip" in call[2])
+    assert "--no-deps" in installer[2]
+    assert "--editable /srv/tgent/app" in installer[2]
+
+
 def test_deploy_skip_rootfs_keeps_rootfs_unmodified_but_deploys_agent_and_runtime(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -115,4 +134,6 @@ def test_cli_exposes_skip_rootfs_option(capsys) -> None:
     with pytest.raises(SystemExit) as exit_info:
         deployment.main(["--help"])
     assert exit_info.value.code == 0
-    assert "--skip-rootfs" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "--skip-rootfs" in output
+    assert "--install-project" in output

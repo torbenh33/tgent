@@ -92,8 +92,13 @@ def deploy_remote_agent(
     config_path: str | os.PathLike[str] | None = None,
     rsync: str = "rsync",
     skip_rootfs: bool = False,
+    install_project: bool = False,
 ) -> None:
-    """Synchronize the agent/runtime; never build or modify a sandbox rootfs."""
+    """Synchronize the agent/runtime; optionally install this checkout in its venv.
+
+    ``install_project`` is for self-hosted tgent deployment only. It refreshes
+    the remote editable package metadata without resolving or changing dependencies.
+    """
     config = load_remote_agent_config(config_path)
     project_root = Path(__file__).resolve().parent
     app_dir = config.remote_base_dir / "app"
@@ -106,6 +111,19 @@ def deploy_remote_agent(
         rsync_argv.extend(("--exclude", pattern))
     rsync_argv.extend(("--", os.fspath(project_root) + "/", f"{config.ssh_host}:{shlex.quote(str(app_dir))}/"))
     subprocess.run(tuple(rsync_argv), check=True)
+
+    if install_project:
+        _ssh(
+            config,
+            str(app_dir / ".venv" / "bin" / "python"),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--no-build-isolation",
+            "--editable",
+            str(app_dir),
+        )
 
     # Publish the sandbox runtime only after the application sync succeeds and
     # before enabling a service that selects the newest complete version. This
@@ -142,12 +160,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="do not build or synchronize the sandbox RFS/rootfs (agent runtime is still updated)",
     )
+    parser.add_argument(
+        "--install-project",
+        action="store_true",
+        help="self-hosted tgent checkout: refresh its editable package/entry points in remote app .venv",
+    )
     arguments = parser.parse_args(argv)
     try:
         deploy_remote_agent(
             config_path=arguments.config,
             rsync=arguments.rsync,
             skip_rootfs=arguments.skip_rootfs,
+            install_project=arguments.install_project,
         )
     except (RemoteAgentConfigError, SandboxError, OSError, RuntimeError, subprocess.CalledProcessError) as err:
         print(f"deploy remote agent: {err}", file=sys.stderr)
