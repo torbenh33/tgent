@@ -136,6 +136,18 @@ async def list_agents_requiring_attention() -> list[dict[str, Any]]:
     return agents
 
 @mcp.tool()
+async def acknowledge_agent_patch_applied(agent_id: str) -> dict[str, Any]:
+    """Explicitly acknowledge an inactive agent's submitted patch as already applied.
+
+    Preserves submitted_head and all patch/review artifacts while unlocking reaping.
+    This operation does not apply or verify the patch. Remote mode is unsupported.
+    """
+    if _remote_adapter() is not None:
+        return {"status": "error", "message": "Patch acknowledgement is not available in remote mode."}
+    return await _controller().acknowledge_submitted_patch_applied(agent_id)
+
+
+@mcp.tool()
 async def reap_agents(agent_ids: list[str]) -> dict[str, Any]:
     """Bulk reap stopped/failed agents without submitted patches; exclusions are reported."""
     remote = _remote_adapter()

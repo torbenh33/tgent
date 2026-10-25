@@ -606,6 +606,30 @@ class AgentController:
                 result.append({**metadata, "requires_attention": True, "attention_reasons": reasons})
         return result
 
+    async def acknowledge_submitted_patch_applied(self, agent_id: str) -> dict[str, Any]:
+        """Record an operator's explicit acknowledgement that submitted work is applied.
+
+        This preserves submitted_head and review artifacts; it only unlocks reaping.
+        Repeated acknowledgements for the same head are idempotent.
+        """
+        metadata = self.store.get_metadata(agent_id)
+        head = metadata.get("submitted_head")
+        if not head:
+            if metadata.get("patch_applied_acknowledgement"):
+                return metadata
+            raise AgentControllerError("Agent has no submitted patch to acknowledge")
+        runtime = self._runtimes.get(agent_id)
+        if runtime is not None and runtime.process.returncode is None:
+            raise AgentControllerError("Stop the agent before acknowledging its submitted patch")
+        if metadata.get("state") not in {"awaiting_review", "stopped", "halted", "failed"}:
+            raise AgentControllerError("Agent must be inactive before acknowledging its submitted patch")
+        acknowledgement = metadata.get("patch_applied_acknowledgement")
+        if acknowledgement and acknowledgement.get("submitted_head") == head:
+            return metadata
+        from datetime import datetime, timezone
+        acknowledgement = {"submitted_head": head, "acknowledged_at": datetime.now(timezone.utc).isoformat()}
+        return self.store.update_metadata(agent_id, {"patch_applied_acknowledgement": acknowledgement})
+
     async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Safely bulk-reap stopped/failed agents without submitted patches."""
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
@@ -730,8 +754,8 @@ class AgentController:
             raise AgentControllerError("Worker process is still running")
         if metadata.get("state") not in {"stopped", "failed", "halted", "reaped"}:
             raise AgentControllerError("Stop the agent before reaping it")
-        if metadata.get("submitted_head"):
-            raise AgentControllerError("Agent has a submitted patch; preserve its snapshot and review artifacts")
+        if metadata.get("submitted_head") and metadata.get("patch_applied_acknowledgement", {}).get("submitted_head") != metadata.get("submitted_head"):
+            raise AgentControllerError("Agent has a submitted patch; preserve its snapshot and review artifacts or acknowledge it as already applied")
         snapshot_path = Path(metadata["snapshot_root"])
         if not snapshot_path.is_relative_to(self.snapshot_root):
             raise AgentControllerError("Recorded snapshot path is outside managed snapshot root")

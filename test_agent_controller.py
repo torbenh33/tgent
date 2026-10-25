@@ -153,6 +153,37 @@ async def test_reap_rejects_awaiting_review_and_preserves_submitted_artifact(tmp
 
 
 @pytest.mark.anyio
+async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap(tmp_path) -> None:
+    class Store:
+        metadata = {"agent_id": "agent", "state": "awaiting_review", "submitted_head": "abc", "snapshot_root": str(snapshot)}
+        def get_metadata(self, _agent_id):
+            return dict(self.metadata)
+        def update_metadata(self, _agent_id, values):
+            self.metadata.update(values)
+            return dict(self.metadata)
+        def remove(self, _agent_id):
+            self.removed = True
+    snapshot = tmp_path / "snapshots" / "agent"
+    snapshot.mkdir(parents=True)
+    artifact = tmp_path / "review.patch"
+    artifact.write_text("review artifact", encoding="utf-8")
+    store = Store()
+    controller = AgentController.__new__(AgentController)
+    controller.store = store
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    first = await controller.acknowledge_submitted_patch_applied("agent")
+    second = await controller.acknowledge_submitted_patch_applied("agent")
+    assert first["patch_applied_acknowledgement"]["submitted_head"] == "abc"
+    assert second["patch_applied_acknowledgement"] == first["patch_applied_acknowledgement"]
+    assert store.metadata["submitted_head"] == "abc"
+    with patch("agent_controller.remove_project_snapshot"):
+        result = await controller.reap_agent("agent")
+    assert result["state"] == "reaped"
+    assert artifact.read_text(encoding="utf-8") == "review artifact"
+
+
+@pytest.mark.anyio
 async def test_reap_rejects_live_awaiting_review_worker(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):
