@@ -147,6 +147,19 @@ def _parse_mbox(raw: bytes) -> list[Message]:
         finally:
             box.close()
 
+def _apply_reply_to(raw: bytes, reply_to: str) -> bytes:
+    """Set Reply-To on every message while preserving Message-IDs and threading."""
+    if not reply_to or "\n" in reply_to or "\r" in reply_to:
+        raise ValueError("Reply-To must be a valid single-line identity")
+    messages = _parse_mbox(raw)
+    for message in messages:
+        if message.get("Reply-To"):
+            message.replace_header("Reply-To", reply_to)
+        else:
+            message["Reply-To"] = reply_to
+    return _serialize_mbox(messages)
+
+
 def _serialize_mbox(messages: list[Message]) -> bytes:
     """Serialize messages as an mbox after any header/body edits."""
     with tempfile.NamedTemporaryFile() as handle:
@@ -218,7 +231,8 @@ def export_patch_series(
 ) -> dict[str, Any]:
     """Export ``base..head`` as an mbox, creating or revising a review series.
 
-    The mbox includes a numbered cover letter (patch 0) followed by the patches.
+    Multi-patch mboxes include a numbered cover letter (patch 0); single-patch
+    mboxes contain only the patch.
     Git generates patch 0 with the series summary and diffstat. If supplied,
     ``cover_letter`` uses its first line as the subject and remaining lines as
     introductory text in place of Git's blurb placeholder, preserving the
@@ -285,7 +299,8 @@ def export_patch_series(
     exported = _git_bytes(
         repo,
         [
-            "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter",
+            "format-patch", "--stdout", "--thread=shallow", "--numbered",
+            *( ["--cover-letter"] if commit_count > 1 else [] ),
             f"{base_sha}..{head_sha}",
         ],
     )
@@ -311,7 +326,7 @@ def export_patch_series(
         else:
             patch["Reply-To"] = reply_to_address
 
-    if cover_letter:
+    if commit_count > 1 and cover_letter:
         title, separator, body = cover_letter.strip().partition("\n")
         if not title.strip():
             return {"status": "error", "message": "The cover letter must start with a subject line."}
@@ -320,18 +335,26 @@ def export_patch_series(
         introduction = body.strip() if separator else ""
         generated_body = generated_body.replace("*** BLURB HERE ***", introduction, 1)
         patches[0].set_content(generated_body)
+    elif commit_count > 1:
+        generated_body = _body(patches[0]).replace(
+            "*** BLURB HERE ***",
+            f"This series contains {commit_count} patches.",
+            1,
+        )
+        patches[0].set_content(generated_body)
 
     # Serialize the modified messages unconditionally: format-patch's raw mbox
     # does not include headers added to the parsed Message objects above.
     raw = _serialize_mbox(patches)
 
     patch_ids = [_message_id(patch) for patch in patches]
-    if len(patches) != commit_count + 1 or any(patch_id is None for patch_id in patch_ids):
+    expected_messages = commit_count + (1 if commit_count > 1 else 0)
+    if len(patches) != expected_messages or any(patch_id is None for patch_id in patch_ids):
         return {
             "status": "error",
             "message": "Generated mbox must contain one Message-ID per patch.",
             "commit_count": commit_count,
-            "expected_patch_count": commit_count + 1,
+            "expected_patch_count": expected_messages,
             "patch_count": len(patches),
         }
 

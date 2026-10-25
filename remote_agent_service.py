@@ -8,6 +8,7 @@ import fcntl
 import inspect
 import json
 import logging
+import mailbox
 import os
 import secrets
 import socket
@@ -188,6 +189,12 @@ class RemoteAgentService:
         patch_bytes = exported.stdout
         if not patch_bytes.strip():
             raise RuntimeError("Patch export produced an empty mbox")
+        from mcp_tgit_review import _apply_reply_to
+        reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
+        try:
+            patch_bytes = _apply_reply_to(patch_bytes, reply_to)
+        except (ValueError, OSError, mailbox.Error) as err:
+            raise RuntimeError(f"Could not set patch Reply-To headers: {err}") from err
         result = {"status": "ok", "base": snapshot.base_commit, "head": params["head_commit"]}
         if len(patch_bytes) > 16 * 1024 * 1024:
             raise RuntimeError("Patch artifact exceeds 16 MiB limit")
