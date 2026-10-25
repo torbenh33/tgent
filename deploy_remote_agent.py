@@ -91,8 +91,9 @@ def deploy_remote_agent(
     *,
     config_path: str | os.PathLike[str] | None = None,
     rsync: str = "rsync",
+    skip_rootfs: bool = False,
 ) -> None:
-    """Synchronize application code, render the unit locally, and enable it."""
+    """Synchronize the agent/runtime; never build or modify a sandbox rootfs."""
     config = load_remote_agent_config(config_path)
     project_root = Path(__file__).resolve().parent
     app_dir = config.remote_base_dir / "app"
@@ -107,7 +108,10 @@ def deploy_remote_agent(
     subprocess.run(tuple(rsync_argv), check=True)
 
     # Publish the sandbox runtime only after the application sync succeeds and
-    # before enabling a service that selects the newest complete version.
+    # before enabling a service that selects the newest complete version. This
+    # updates the agent runtime, not the sandbox RFS/rootfs itself. This deploy
+    # flow has no RFS build/sync step; --skip-rootfs is retained as an explicit
+    # assurance that no such step is requested and must not suppress runtime.
     prepare_remote_runtime(config, rsync=rsync)
 
     rendered = _render_unit(config)
@@ -133,9 +137,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, help="local deployment TOML path")
     parser.add_argument("--rsync", default="rsync", help="rsync executable")
+    parser.add_argument(
+        "--skip-rootfs",
+        action="store_true",
+        help="do not build or synchronize the sandbox RFS/rootfs (agent runtime is still updated)",
+    )
     arguments = parser.parse_args(argv)
     try:
-        deploy_remote_agent(config_path=arguments.config, rsync=arguments.rsync)
+        deploy_remote_agent(
+            config_path=arguments.config,
+            rsync=arguments.rsync,
+            skip_rootfs=arguments.skip_rootfs,
+        )
     except (RemoteAgentConfigError, SandboxError, OSError, RuntimeError, subprocess.CalledProcessError) as err:
         print(f"deploy remote agent: {err}", file=sys.stderr)
         return 1

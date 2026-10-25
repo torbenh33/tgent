@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import deploy_remote_agent as deployment
 from remote_agent_config import RemoteAgentConfig
 
@@ -71,3 +73,46 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
     assert app_sync[-1] == "beep:/srv/tgent/app/"
     unit_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" not in argv)
     assert unit_sync[-1] == "beep:.config/systemd/user/tgent-remote-agent.service"
+
+
+def test_deploy_skip_rootfs_keeps_rootfs_unmodified_but_deploys_agent_and_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "remote-agent.toml"
+    config_path.write_text(
+        'ssh_host = "beep"\nremote_base_dir = "/srv/tgent"\n',
+        encoding="utf-8",
+    )
+    # Represents pre-existing rootfs state. There is no rootfs-building or
+    # rootfs-sync operation in this app/runtime deployment flow.
+    rootfs_contents = {"sentinel": "preserve exactly"}
+    original_rootfs_contents = rootfs_contents.copy()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_prepare(config, *, rsync):
+        assert str(config.remote_base_dir) == "/srv/tgent"
+        assert rsync == "rsync"
+        calls.append(("prepare-runtime",))
+
+    def fake_run(argv, **_kwargs):
+        normalized = tuple(str(part) for part in argv)
+        calls.append(normalized)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(deployment.subprocess, "run", fake_run)
+    monkeypatch.setattr(deployment, "prepare_remote_runtime", fake_prepare)
+
+    deployment.deploy_remote_agent(config_path=config_path, skip_rootfs=True)
+
+    assert rootfs_contents == original_rootfs_contents
+    assert any(call[0] == "rsync" and "--delete" in call for call in calls)
+    assert ("prepare-runtime",) in calls
+    assert any("systemctl --user enable --now" in call[-1] for call in calls if call[0] == "ssh")
+    assert not any("rootfs" in " ".join(call).lower() for call in calls)
+
+
+def test_cli_exposes_skip_rootfs_option(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        deployment.main(["--help"])
+    assert exit_info.value.code == 0
+    assert "--skip-rootfs" in capsys.readouterr().out
