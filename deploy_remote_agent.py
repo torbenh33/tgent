@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Sequence
 
 from agent_sandbox import SandboxError
+from prepare_remote_runtime import prepare_remote_runtime
 from remote_agent_config import RemoteAgentConfigError, load_remote_agent_config
 
 
@@ -26,7 +27,6 @@ _UNIT_TEMPLATE = Path(__file__).parent / "deploy" / "remote-agent" / "remote-age
 _RSYNC_EXCLUDES = (
     ".git/",
     "venv/",
-    ".venv/",
     "__pycache__/",
     ".pytest_cache/",
     ".mypy_cache/",
@@ -60,7 +60,7 @@ def _systemd_setting_escape(value: str) -> str:
 
 def _render_unit(config) -> str:
     app_dir = str(config.remote_base_dir / "app")
-    python = str(config.remote_base_dir / "app" / "bin" / "python")
+    python = str(config.remote_base_dir / "app" / ".venv" / "bin" / "python")
     try:
         template = _UNIT_TEMPLATE.read_text(encoding="utf-8")
     except OSError as err:
@@ -104,8 +104,8 @@ def deploy_remote_agent(
     app_dir = config.remote_base_dir / "app"
     # Keep the old complete app available until the new one has been validated.
     backup_dir = config.remote_base_dir / "app.rollback"
-    _ssh(config, "install", "-d", "--", str(config.remote_base_dir), ".config/systemd/user")
     _ssh(config, "systemctl", "--user", "stop", _UNIT_NAME, check=False)
+    _ssh(config, "install", "-d", "--", str(config.remote_base_dir), ".config/systemd/user")
     _ssh(config, "rm", "-rf", "--", str(backup_dir))
     # Stage beside app on the same filesystem; venv is created at its final
     # path after promotion, avoiding non-relocatable copied venv scripts.
@@ -123,8 +123,9 @@ def deploy_remote_agent(
     _ssh(config, "mv", "--", str(staging_dir), str(app_dir))
     # Create venv only after promotion: its scripts and pyvenv metadata bind to
     # this exact final path and cannot be safely relocated from a staging name.
+    prepare_remote_runtime(config, rsync=rsync)
     _ssh(config, "python3", "-m", "venv", str(app_dir))
-    _ssh(config, str(app_dir / "bin/python"), "-m", "pip", "install", "--no-build-isolation", str(app_dir))
+    _ssh(config, str(app_dir / "bin/python"), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "--editable", str(app_dir))
     _ssh(config, str(app_dir / "bin/python"), "-c", "import agent_worker, remote_agent_service")
 
     rendered = _render_unit(config)

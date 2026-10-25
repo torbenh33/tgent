@@ -58,10 +58,11 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
 
     commands = [argv[2] for argv, _kwargs in calls if argv[0] == "ssh"]
     assert commands[0] == "systemctl --user stop tgent-remote-agent.service"
-    assert "install -d -- /srv/tgent/app .config/systemd/user" in commands[1]
-    assert commands[-2:] == [
+    assert "install -d -- /srv/tgent .config/systemd/user" in commands[1]
+    assert commands[-3:] == [
         "systemctl --user daemon-reload",
         "systemctl --user enable --now tgent-remote-agent.service",
+        "rm -rf -- /srv/tgent/app.rollback",
     ]
     assert events == ["app", "runtime", "unit"]
     app_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" in argv)
@@ -70,7 +71,7 @@ def test_deploy_syncs_app_and_installs_rendered_user_unit(tmp_path: Path, monkey
         app_sync[index] == "--exclude" and app_sync[index + 1] == ".venv/"
         for index in range(len(app_sync) - 1)
     )
-    assert app_sync[-1] == "beep:/srv/tgent/app/"
+    assert app_sync[-1] == "beep:/srv/tgent/app.staging/"
     unit_sync = next(argv for argv, _kwargs in calls if argv[0] == "rsync" and "--delete" not in argv)
     assert unit_sync[-1] == "beep:.config/systemd/user/tgent-remote-agent.service"
 

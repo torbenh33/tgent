@@ -48,6 +48,20 @@ def _managed_directory(path: Path) -> None:
 
 def _selected_runtime(config: RemoteAgentConfig) -> RuntimeManifest:
     """Describe the single deployed app as both service and worker runtime."""
+    from agent_sandbox import read_runtime_manifest
+
+    runtime_root = Path(str(config.runtime_dir))
+    versions = runtime_root / "versions"
+    candidates: list[RuntimeManifest] = []
+    if versions.is_dir():
+        for manifest_path in versions.glob("*/manifest.json"):
+            try:
+                candidates.append(read_runtime_manifest(manifest_path))
+            except (OSError, ValueError, SandboxError):
+                continue
+    if candidates:
+        return max(candidates, key=lambda manifest: manifest.rsync_completed_at)
+
     app = Path(str(config.remote_base_dir / "app"))
     python = app / "bin" / "python"
     if not python.is_file() or not (app / "pyvenv.cfg").is_file():
@@ -60,6 +74,10 @@ def _selected_runtime(config: RemoteAgentConfig) -> RuntimeManifest:
 
 
 def _runtime_worker_command(manifest: RuntimeManifest) -> tuple[str, ...]:
+    for mount in manifest.layout.mounts:
+        candidate = mount.target / "bin" / "python"
+        if candidate.is_absolute():
+            return (str(candidate), "-m", "agent_worker")
     return ("app-bin-python", "-m", "agent_worker")
 
 
@@ -89,7 +107,7 @@ class RemoteAgentService:
             runtime_layout=self.runtime_manifest.layout,
             runtime_version=self.runtime_manifest.version,
             runtime_app_path=str(config.remote_base_dir / "app"),
-            worker_command=(str(config.remote_base_dir / "app" / "bin/python"), "-m", "agent_worker"),
+            worker_command=_runtime_worker_command(self.runtime_manifest),
             max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
             max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
