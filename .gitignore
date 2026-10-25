@@ -1,1 +1,3 @@
 __pycache__/
+build/
+tgit_agent.egg-info/
