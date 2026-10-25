@@ -150,6 +150,10 @@ class RemoteAgentAdapter:
         """Bulk restart eligible agents through one request."""
         return self._request("restart_agents", agent_ids=agent_ids)
 
+    def nack_patch(self, agent_id: str, reason: str | None = None) -> dict[str, object]:
+        """Record operator rejection of an inactive submitted patch."""
+        return self._request("nack_patch", agent_id=agent_id, reason=reason)
+
     def patches(self, agent_id: str) -> dict[str, object]:
         """Return metadata for the remote patch artifact, if one is available."""
         return self._request("patches", agent_id=agent_id)

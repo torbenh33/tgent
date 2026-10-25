@@ -206,6 +206,49 @@ async def test_acknowledge_patch_rejects_missing_patch_and_active_state() -> Non
 
 
 @pytest.mark.anyio
+async def test_nack_patch_records_reason_idempotently_and_allows_reap(tmp_path) -> None:
+    snapshot = tmp_path / "snapshots" / "agent"
+    snapshot.mkdir(parents=True)
+    artifact = tmp_path / "retained.patch"
+    artifact.write_text("submitted artifact", encoding="utf-8")
+    class Store:
+        metadata = {"agent_id": "agent", "state": "stopped", "submitted_head": "abc", "snapshot_root": str(snapshot)}
+        def get_metadata(self, _agent_id): return dict(self.metadata)
+        def update_metadata(self, _agent_id, values):
+            self.metadata.update(values)
+            return dict(self.metadata)
+        def remove(self, _agent_id): self.removed = True
+    store = Store()
+    controller = AgentController.__new__(AgentController)
+    controller.store = store
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    first = await controller.reject_submitted_patch("agent", "not suitable")
+    second = await controller.reject_submitted_patch("agent", "different reason")
+    assert first["patch_rejection"]["reason"] == "not suitable"
+    assert second["patch_rejection"] == first["patch_rejection"]
+    assert "patch_applied_acknowledgement" not in store.metadata
+    assert store.metadata["submitted_head"] == "abc"
+    with patch("agent_controller.remove_project_snapshot"):
+        await controller.reap_agent("agent")
+    assert artifact.read_text(encoding="utf-8") == "submitted artifact"
+
+
+@pytest.mark.anyio
+async def test_nack_patch_rejects_live_agent_and_invalid_reason() -> None:
+    class Store:
+        metadata = {"agent_id": "agent", "state": "running", "submitted_head": "abc"}
+        def get_metadata(self, _agent_id): return dict(self.metadata)
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._runtimes = {}
+    with pytest.raises(AgentControllerError, match="inactive"):
+        await controller.reject_submitted_patch("agent")
+    with pytest.raises(AgentControllerError, match="reason"):
+        await controller.reject_submitted_patch("agent", "x" * 4001)
+
+
+@pytest.mark.anyio
 async def test_reap_rejects_live_awaiting_review_worker(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):

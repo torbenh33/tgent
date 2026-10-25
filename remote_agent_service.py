@@ -128,6 +128,7 @@ class RemoteAgentService:
                 "logs": self._logs,
                 "reap_agents": self._reap_agents,
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
+                "nack_patch": self._nack_patch,
                 "patches": self._patches,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
@@ -262,6 +263,9 @@ class RemoteAgentService:
 
     async def _acknowledge_patch_applied(self, request):
         return await self.controller.acknowledge_submitted_patch_applied(request["agent_id"])
+
+    async def _nack_patch(self, request):
+        return await self.controller.reject_submitted_patch(request["agent_id"], request["reason"] )
 
     async def _agent_tools(self, request):
         return await self.controller.get_agent_tools(request["agent_id"])

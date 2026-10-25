@@ -645,6 +645,30 @@ class AgentController:
         acknowledgement = {"submitted_head": head, "acknowledged_at": datetime.now(timezone.utc).isoformat()}
         return self.store.update_metadata(agent_id, {"patch_applied_acknowledgement": acknowledgement})
 
+    async def reject_submitted_patch(self, agent_id: str, reason: str | None = None) -> dict[str, Any]:
+        """Record an operator rejection without treating it as application."""
+        if reason is not None and (not isinstance(reason, str) or len(reason) > 4000):
+            raise AgentControllerError("reason must be a string of at most 4000 characters")
+        metadata = self.store.get_metadata(agent_id)
+        head = metadata.get("submitted_head")
+        if not head:
+            if metadata.get("patch_rejection"):
+                return metadata
+            raise AgentControllerError("Agent has no submitted patch to reject")
+        runtime = self._runtimes.get(agent_id)
+        if runtime is not None and runtime.process.returncode is None:
+            raise AgentControllerError("Stop the agent before rejecting its submitted patch")
+        if metadata.get("state") not in {"awaiting_review", "stopped", "halted", "failed"}:
+            raise AgentControllerError("Agent must be inactive before rejecting its submitted patch")
+        rejection = metadata.get("patch_rejection")
+        if rejection and rejection.get("submitted_head") == head:
+            return metadata
+        from datetime import datetime, timezone
+        rejection = {"submitted_head": head, "rejected_at": datetime.now(timezone.utc).isoformat()}
+        if reason is not None:
+            rejection["reason"] = reason
+        return self.store.update_metadata(agent_id, {"patch_rejection": rejection})
+
     async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Safely bulk-reap stopped/failed agents without submitted patches."""
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
@@ -807,8 +831,11 @@ class AgentController:
             raise AgentControllerError("Worker process is still running")
         if metadata.get("state") not in {"stopped", "failed", "halted", "reaped"}:
             raise AgentControllerError("Stop the agent before reaping it")
-        if metadata.get("submitted_head") and metadata.get("patch_applied_acknowledgement", {}).get("submitted_head") != metadata.get("submitted_head"):
-            raise AgentControllerError("Agent has a submitted patch; preserve its snapshot and review artifacts or acknowledge it as already applied")
+        submitted_head = metadata.get("submitted_head")
+        rejected = metadata.get("patch_rejection", {}).get("submitted_head") == submitted_head
+        acknowledged = metadata.get("patch_applied_acknowledgement", {}).get("submitted_head") == submitted_head
+        if submitted_head and not (rejected or acknowledged):
+            raise AgentControllerError("Agent has a submitted patch; preserve its snapshot and review artifacts, reject it, or acknowledge it as already applied")
         snapshot_path = Path(metadata["snapshot_root"])
         if not snapshot_path.is_relative_to(self.snapshot_root):
             raise AgentControllerError("Recorded snapshot path is outside managed snapshot root")

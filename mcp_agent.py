@@ -149,6 +149,15 @@ async def acknowledge_agent_patch_applied(agent_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def nack_agent_patch(agent_id: str, reason: str | None = None) -> dict[str, Any]:
+    """Record operator rejection of an inactive submitted patch; does not apply it."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.nack_patch, agent_id, reason)
+    return await _controller().reject_submitted_patch(agent_id, reason)
+
+
+@mcp.tool()
 async def reap_agents(agent_ids: list[str]) -> dict[str, Any]:
     """Bulk reap stopped/failed agents without submitted patches; exclusions are reported."""
     remote = _remote_adapter()
