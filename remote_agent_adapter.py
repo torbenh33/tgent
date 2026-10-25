@@ -138,9 +138,17 @@ class RemoteAgentAdapter:
         """Record explicit acknowledgement of an already-applied submitted patch."""
         return self._request("acknowledge_patch_applied", agent_id=agent_id)
 
-    def reap(self, agent_id: str) -> dict[str, object]:
-        """Remove a stopped remote agent's snapshot and controller state."""
-        return self._request("reap", agent_id=agent_id)
+    def reap_agents(self, agent_ids: list[str]) -> dict[str, object]:
+        """Bulk reap through one remote protocol request."""
+        return self._request("reap_agents", agent_ids=agent_ids)
+
+    def stop_agents(self) -> dict[str, object]:
+        """Stop eligible remote workers in one request."""
+        return self._request("stop_agents")
+
+    def restart_agents(self, agent_ids: list[str]) -> dict[str, object]:
+        """Bulk restart eligible agents through one request."""
+        return self._request("restart_agents", agent_ids=agent_ids)
 
     def patches(self, agent_id: str) -> dict[str, object]:
         """Return metadata for the remote patch artifact, if one is available."""

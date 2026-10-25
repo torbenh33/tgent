@@ -190,6 +190,19 @@ class AgentController:
             if name.strip() and name.strip() not in self.default_tool_modules
         )
         self._lock = asyncio.Lock()
+        # Worker processes cannot survive a controller restart as managed workers.
+        # Recover stale running bookkeeping without touching patch metadata/history.
+        for entry in self.store.state_root.iterdir():
+            if entry.name == "logs" or entry.is_symlink() or not entry.is_dir():
+                continue
+            try:
+                metadata = self.store.get_metadata(entry.name)
+                if metadata.get("state") == "running":
+                    self.store.update_metadata(entry.name, {
+                        "state": "stopped", "stop_reason": "controller_restarted", "worker_pid": None,
+                    })
+            except (AgentStoreError, OSError):
+                continue
 
     @staticmethod
     def _validate_start_request(request: Any) -> tuple[list[dict[str, Any]], int, int]:
@@ -650,9 +663,47 @@ class AgentController:
                 elif metadata.get("state") not in {"stopped", "failed"}:
                     results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
                 else:
-                    results.append({**(await self.reap_agent(agent_id)), "status": "reaped"})
+                    results.append({**(await self._reap_agent(agent_id)), "status": "reaped"})
             except (AgentStoreError, AgentControllerError, OSError) as err:
                 results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
+        return {"results": results}
+
+    async def stop_agents(self, agent_ids: list[str] | None = None) -> dict[str, Any]:
+        """Stop eligible workers in bulk; submitted-patch workers are preserved for review."""
+        selected = agent_ids if agent_ids is not None else [a["agent_id"] for a in await self.list_agents()]
+        if not isinstance(selected, list) or any(not isinstance(i, str) for i in selected):
+            raise AgentControllerError("agent_ids must be a list of agent IDs")
+        results = []
+        for agent_id in dict.fromkeys(selected):
+            try:
+                metadata = self.store.get_metadata(agent_id)
+                runtime = self._runtimes.get(agent_id)
+                if metadata.get("submitted_head"):
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review"})
+                elif runtime is None and metadata.get("state") not in {"awaiting_review"}:
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "no_active_worker", "state": metadata.get("state")})
+                else:
+                    stopped = await self.stop_agent(agent_id)
+                    results.append({**stopped, "agent_id": agent_id, "status": "stopped"})
+            except Exception as err:
+                results.append({"agent_id": agent_id, "status": "error", "reason": str(err)})
+        return {"results": results}
+
+    async def restart_agents(self, agent_ids: list[str]) -> dict[str, Any]:
+        """Recover eligible stopped agents as new children, retaining original history/snapshot."""
+        if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(i, str) for i in agent_ids):
+            raise AgentControllerError("agent_ids must be a non-empty list of agent IDs")
+        results = []
+        for agent_id in dict.fromkeys(agent_ids):
+            try:
+                metadata = self.store.get_metadata(agent_id)
+                if metadata.get("state") != "stopped" or metadata.get("submitted_head"):
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "not_restartable", "state": metadata.get("state")})
+                    continue
+                result = await self.continue_agent(agent_id, [{"role": "user", "content": "Resume the previous task from the saved history."}])
+                results.append({**result, "status": "restarted"})
+            except Exception as err:
+                results.append({"agent_id": agent_id, "status": "error", "reason": str(err)})
         return {"results": results}
 
     async def get_agent_log(self, agent_id: str, *, max_bytes: int = 64 * 1024) -> dict[str, Any]:
@@ -749,7 +800,7 @@ class AgentController:
         if agent_ids:
             await asyncio.gather(*(self.stop_agent(agent_id) for agent_id in agent_ids), return_exceptions=True)
 
-    async def reap_agent(self, agent_id: str) -> dict[str, Any]:
+    async def _reap_agent(self, agent_id: str) -> dict[str, Any]:
         metadata = self.store.get_metadata(agent_id)
         runtime = self._runtimes.get(agent_id)
         if runtime is not None and runtime.process.returncode is None:

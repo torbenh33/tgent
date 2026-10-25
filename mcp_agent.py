@@ -154,19 +154,7 @@ async def reap_agents(agent_ids: list[str]) -> dict[str, Any]:
     remote = _remote_adapter()
     if remote is None:
         return await _controller().reap_agents(agent_ids)
-    results = []
-    for agent_id in agent_ids:
-        try:
-            metadata = await asyncio.to_thread(remote.status, agent_id)
-            if metadata.get("submitted_head") or metadata.get("state") == "awaiting_review":
-                results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review", "submitted_head": metadata.get("submitted_head")})
-            elif metadata.get("state") not in {"stopped", "failed"}:
-                results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
-            else:
-                results.append({**await asyncio.to_thread(remote.reap, agent_id), "status": "reaped"})
-        except Exception as err:
-            results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
-    return {"results": results}
+    return await asyncio.to_thread(remote.reap_agents, agent_ids)
 
 
 @mcp.tool()
@@ -257,6 +245,24 @@ async def set_agent_tools(agent_id: str, tools: list[str]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def stop_agents() -> dict[str, Any]:
+    """Stop eligible workers system-wide with per-agent outcomes."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.stop_agents)
+    return await _controller().stop_agents()
+
+
+@mcp.tool()
+async def restart_agents(agent_ids: list[str]) -> dict[str, Any]:
+    """Restart eligible stopped agents as children preserving saved task/history."""
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.restart_agents, agent_ids)
+    return await _controller().restart_agents(agent_ids)
+
+
+@mcp.tool()
 async def stop_agent(agent_id: str) -> dict[str, Any]:
     """Request worker shutdown and wait for its process to exit."""
     remote = _remote_adapter()
@@ -264,18 +270,6 @@ async def stop_agent(agent_id: str) -> dict[str, Any]:
         return await asyncio.to_thread(remote.stop, agent_id)
     return await _controller().stop_agent(agent_id)
 
-
-@mcp.tool()
-async def reap_agent(agent_id: str) -> dict[str, Any]:
-    """Remove an inactive stopped, failed, or halted agent's snapshot and controller state.
-
-    Stop awaiting-review agents through stop_agent before reaping. Submitted patch
-    artifacts are separate from controller state; retain/import them before cleanup.
-    """
-    remote = _remote_adapter()
-    if remote is not None:
-        return await asyncio.to_thread(remote.reap, agent_id)
-    return await _controller().reap_agent(agent_id)
 
 
 @mcp.tool()

@@ -123,8 +123,10 @@ class RemoteAgentService:
                 "history": self._history,
                 "continue": self._continue,
                 "stop": self._stop,
+                "stop_agents": self._stop_agents,
+                "restart_agents": self._restart_agents,
                 "logs": self._logs,
-                "reap": self._reap,
+                "reap_agents": self._reap_agents,
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "patches": self._patches,
                 "list_agents": self._list_agents,
@@ -249,8 +251,14 @@ class RemoteAgentService:
     async def _logs(self, request):
         return await self.controller.get_agent_log(request["agent_id"], max_bytes=request["max_bytes"])
 
-    async def _reap(self, request):
-        return await self.controller.reap_agent(request["agent_id"])
+    async def _stop_agents(self, request):
+        return await self.controller.stop_agents()
+
+    async def _restart_agents(self, request):
+        return await self.controller.restart_agents(request["agent_ids"])
+
+    async def _reap_agents(self, request):
+        return await self.controller.reap_agents(request["agent_ids"])
 
     async def _acknowledge_patch_applied(self, request):
         return await self.controller.acknowledge_submitted_patch_applied(request["agent_id"])

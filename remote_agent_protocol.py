@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "logs", "reap", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history"})
 
 
 class RemoteProtocolError(ValueError):
@@ -58,6 +58,9 @@ def validate_request(value: object) -> dict[str, object]:
         "history": common | {"agent_id", "limit"},
         "continue": common | {"agent_id", "messages"},
         "stop": common | {"agent_id"},
+        "stop_agents": common,
+        "restart_agents": common | {"agent_ids"},
+        "reap_agents": common | {"agent_ids"},
         "logs": common | {"agent_id", "max_bytes"},
         "reap": common | {"agent_id"},
         "patches": common | {"agent_id"},
@@ -76,7 +79,7 @@ def validate_request(value: object) -> dict[str, object]:
         _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
-    elif operation != "list_agents":
+    elif operation not in {"list_agents", "stop_agents"}:
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "set_tools":
             tools = value.get("tools")
@@ -102,6 +105,12 @@ def validate_request(value: object) -> dict[str, object]:
                 or len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > 100_000
             ):
                 raise RemoteProtocolError("continue messages must be a non-empty bounded array of objects")
+    if operation in {"reap_agents", "restart_agents"}:
+        ids = value.get("agent_ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or any(not isinstance(i, str) for i in ids):
+            raise RemoteProtocolError("agent_ids must be a non-empty bounded array")
+        for agent_id in ids:
+            _validate_id(agent_id, "agent_id")
     return value
 
 
