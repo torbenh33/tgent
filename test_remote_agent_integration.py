@@ -74,13 +74,17 @@ def _write_test_runtime(config: RemoteAgentConfig, version: str) -> None:
     python_mount = version_root / "mounts" / "mount-000"
     (python_mount / "bin").mkdir(parents=True)
     (python_mount / "bin" / "python").write_text("test python", encoding="utf-8")
+    (python_mount / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     write_runtime_manifest(
         version_root / "manifest.json",
         RuntimeManifest(
             version=version,
             rsync_completed_at=datetime.now(timezone.utc),
             layout=SandboxRuntimeLayout(
-                (RuntimeMount(python_mount, Path("/opt/runtime-python")),)
+                (
+                    RuntimeMount(Path("/usr"), Path("/usr")),
+                    RuntimeMount(python_mount, Path("/opt/runtime-python")),
+                )
             ),
         ),
     )

@@ -1,9 +1,10 @@
 """Deploy the remote agent application and user systemd unit to Beep.
 
 The deployment configuration is read locally from
-``~/.config/tgent/remote-agent.toml``. This command synchronizes the app and
-the application to a staged ``<remote_base_dir>/app``, creates a Python
-environment at its final path, validates it, then switches the service.
+``~/.config/tgent/remote-agent.toml``. The app is synchronized to a staged
+``<remote_base_dir>/app`` and published before the service is switched. With
+``--install-project``, the local Python environment is updated before syncing,
+so its installed packages are transferred with the checkout.
 """
 
 from __future__ import annotations
@@ -174,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--install-project",
         action="store_true",
-        help="compatibility option; install the synchronized checkout into app environment",
+        help="install this checkout into the local Python environment before syncing",
     )
     arguments = parser.parse_args(argv)
     try:

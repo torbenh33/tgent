@@ -72,13 +72,17 @@ def _selected_runtime(config: RemoteAgentConfig) -> RuntimeManifest:
         layout=SandboxRuntimeLayout((RuntimeMount(app, app),)),
     )
 
-
 def _runtime_worker_command(manifest: RuntimeManifest) -> tuple[str, ...]:
+    """Use the sandbox path corresponding to the mounted Python environment."""
     for mount in manifest.layout.mounts:
-        candidate = mount.target / "bin" / "python"
-        if candidate.is_absolute():
-            return (str(candidate), "-m", "agent_worker")
-    return ("app-bin-python", "-m", "agent_worker")
+        source = Path(str(mount.source))
+        if not (source / "pyvenv.cfg").is_file():
+            continue
+        for executable in ("python", "python3"):
+            if (source / "bin" / executable).is_file():
+                target = Path(str(mount.target)) / "bin" / executable
+                return (str(target), "-m", "agent_worker")
+    raise SandboxError(f"Runtime {manifest.version} has no mounted Python virtual environment")
 
 
 class RemoteAgentService:
