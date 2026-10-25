@@ -127,6 +127,7 @@ class AgentController:
         worker_command: tuple[str, ...] | None = None,
         runtime_layout: SandboxRuntimeLayout | None = None,
         runtime_version: str | None = None,
+        runtime_app_path: str | os.PathLike[str] | None = None,
         bwrap: str = "bwrap",
         max_model_calls: int = 200,
         max_runtime_seconds: int = 43200,
@@ -162,6 +163,7 @@ class AgentController:
         self.sandbox_policy = sandbox_policy
         self.worker_command = worker_command or (sys.executable, "-m", "agent_worker")
         self.runtime_version = runtime_version
+        self.runtime_app_path = Path(runtime_app_path or sys.prefix).absolute()
         self.runtime_layout = runtime_layout or build_runtime_layout(
             runtime_dirs=(Path(sys.prefix),),
             runtime_files=tuple(
@@ -321,7 +323,7 @@ class AgentController:
                 worker_env={
                     "AGENT_ID": agent_id,
                     "AGENT_BASE_COMMIT": snapshot.base_commit,
-                    "PYTHONPATH": "/opt/agent-runtime",
+                    "PYTHONPATH": str(self.runtime_app_path),
                 },
                 runtime_layout=self.runtime_layout,
             )

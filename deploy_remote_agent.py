@@ -2,8 +2,8 @@
 
 The deployment configuration is read locally from
 ``~/.config/tgent/remote-agent.toml``. This command synchronizes the app and
-its ``.venv`` to ``<remote_base_dir>/app``, publishes a versioned sandbox
-runtime, renders and installs the user service unit, and enables the service.
+the application to a staged ``<remote_base_dir>/app``, creates a Python
+environment at its final path, validates it, then switches the service.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Sequence
 
 from agent_sandbox import SandboxError
-from prepare_remote_runtime import prepare_remote_runtime
 from remote_agent_config import RemoteAgentConfigError, load_remote_agent_config
 
 
@@ -27,6 +26,7 @@ _UNIT_TEMPLATE = Path(__file__).parent / "deploy" / "remote-agent" / "remote-age
 _RSYNC_EXCLUDES = (
     ".git/",
     "venv/",
+    ".venv/",
     "__pycache__/",
     ".pytest_cache/",
     ".mypy_cache/",
@@ -60,7 +60,7 @@ def _systemd_setting_escape(value: str) -> str:
 
 def _render_unit(config) -> str:
     app_dir = str(config.remote_base_dir / "app")
-    python = str(config.remote_base_dir / "app" / ".venv" / "bin" / "python")
+    python = str(config.remote_base_dir / "app" / "bin" / "python")
     try:
         template = _UNIT_TEMPLATE.read_text(encoding="utf-8")
     except OSError as err:
@@ -94,43 +94,38 @@ def deploy_remote_agent(
     skip_rootfs: bool = False,
     install_project: bool = False,
 ) -> None:
-    """Synchronize the agent/runtime; optionally install this checkout in its venv.
+    """Deploy and validate one complete app environment before service activation.
 
-    ``install_project`` is for self-hosted tgent deployment only. It refreshes
-    the remote editable package metadata without resolving or changing dependencies.
+    ``install_project`` is retained for CLI compatibility; the synchronized
+    checkout is always installed as a non-editable package.
     """
     config = load_remote_agent_config(config_path)
     project_root = Path(__file__).resolve().parent
     app_dir = config.remote_base_dir / "app"
-    # The user unit path is relative to the SSH account's home directory.
+    # Keep the old complete app available until the new one has been validated.
+    backup_dir = config.remote_base_dir / "app.rollback"
+    _ssh(config, "install", "-d", "--", str(config.remote_base_dir), ".config/systemd/user")
     _ssh(config, "systemctl", "--user", "stop", _UNIT_NAME, check=False)
-    _ssh(config, "install", "-d", "--", str(app_dir), ".config/systemd/user")
+    _ssh(config, "rm", "-rf", "--", str(backup_dir))
+    # Stage beside app on the same filesystem; venv is created at its final
+    # path after promotion, avoiding non-relocatable copied venv scripts.
+    staging_dir = config.remote_base_dir / "app.staging"
+    _ssh(config, "rm", "-rf", "--", str(staging_dir))
+    _ssh(config, "install", "-d", "--", str(staging_dir))
 
     rsync_argv = [rsync, "-a", "--delete"]
     for pattern in _RSYNC_EXCLUDES:
         rsync_argv.extend(("--exclude", pattern))
-    rsync_argv.extend(("--", os.fspath(project_root) + "/", f"{config.ssh_host}:{shlex.quote(str(app_dir))}/"))
+    rsync_argv.extend(("--", os.fspath(project_root) + "/", f"{config.ssh_host}:{shlex.quote(str(staging_dir))}/"))
     subprocess.run(tuple(rsync_argv), check=True)
 
-    if install_project:
-        _ssh(
-            config,
-            str(app_dir / ".venv" / "bin" / "python"),
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            "--no-build-isolation",
-            "--editable",
-            str(app_dir),
-        )
-
-    # Publish the sandbox runtime only after the application sync succeeds and
-    # before enabling a service that selects the newest complete version. This
-    # updates the agent runtime, not the sandbox RFS/rootfs itself. This deploy
-    # flow has no RFS build/sync step; --skip-rootfs is retained as an explicit
-    # assurance that no such step is requested and must not suppress runtime.
-    prepare_remote_runtime(config, rsync=rsync)
+    _ssh(config, "if", "test", "-d", str(app_dir), ";", "then", "mv", "--", str(app_dir), str(backup_dir), ";", "fi")
+    _ssh(config, "mv", "--", str(staging_dir), str(app_dir))
+    # Create venv only after promotion: its scripts and pyvenv metadata bind to
+    # this exact final path and cannot be safely relocated from a staging name.
+    _ssh(config, "python3", "-m", "venv", str(app_dir))
+    _ssh(config, str(app_dir / "bin/python"), "-m", "pip", "install", "--no-build-isolation", str(app_dir))
+    _ssh(config, str(app_dir / "bin/python"), "-c", "import agent_worker, remote_agent_service")
 
     rendered = _render_unit(config)
     with tempfile.TemporaryDirectory(prefix="tgent-unit-") as temporary_dir:
@@ -149,6 +144,7 @@ def deploy_remote_agent(
 
     _ssh(config, "systemctl", "--user", "daemon-reload")
     _ssh(config, "systemctl", "--user", "enable", "--now", _UNIT_NAME)
+    _ssh(config, "rm", "-rf", "--", str(backup_dir))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -163,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--install-project",
         action="store_true",
-        help="self-hosted tgent checkout: refresh its editable package/entry points in remote app .venv",
+        help="compatibility option; install the synchronized checkout into app environment",
     )
     arguments = parser.parse_args(argv)
     try:

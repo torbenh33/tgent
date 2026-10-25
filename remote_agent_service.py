@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
+from datetime import datetime, timezone
 import inspect
 import json
 import logging
@@ -19,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 from agent_controller import AgentController
-from agent_sandbox import RuntimeManifest, SandboxError, read_runtime_manifest
+from agent_sandbox import RuntimeManifest, SandboxError, RuntimeMount, SandboxRuntimeLayout
 from llm import LLMClient
 from remote_agent_config import RemoteAgentConfig, load_remote_agent_config
 from remote_agent_daemon import build_async_operation_handlers
@@ -46,43 +47,20 @@ def _managed_directory(path: Path) -> None:
 
 
 def _selected_runtime(config: RemoteAgentConfig) -> RuntimeManifest:
-    """Select the latest complete runtime, ignoring partial staging dirs."""
-    versions_root = Path(str(config.runtime_dir / "versions"))
-    if versions_root.is_symlink() or not versions_root.is_dir():
-        raise SandboxError(f"No prepared runtime versions directory: {versions_root}")
-    candidates = sorted(
-        (
-            item for item in versions_root.iterdir()
-            if item.is_dir() and not item.is_symlink() and item.name.startswith("runtime-")
-        ),
-        key=lambda item: item.name,
-        reverse=True,
+    """Describe the single deployed app as both service and worker runtime."""
+    app = Path(str(config.remote_base_dir / "app"))
+    python = app / "bin" / "python"
+    if not python.is_file() or not (app / "pyvenv.cfg").is_file():
+        raise SandboxError(f"No valid deployed app environment at {app}")
+    return RuntimeManifest(
+        version="app-current",
+        rsync_completed_at=datetime.now(timezone.utc),
+        layout=SandboxRuntimeLayout((RuntimeMount(app, app),)),
     )
-    for directory in candidates:
-        try:
-            manifest = read_runtime_manifest(directory / "manifest.json")
-        except SandboxError:
-            continue
-        if manifest.version == directory.name:
-            return manifest
-    raise SandboxError(f"No complete prepared runtime under {versions_root}")
 
 
 def _runtime_worker_command(manifest: RuntimeManifest) -> tuple[str, ...]:
-    """Return the Python command at the selected runtime's sandbox target."""
-    system_targets = {Path("/usr"), Path("/lib"), Path("/lib64"), Path("/bin"), Path("/sbin")}
-    candidates = [
-        mount for mount in manifest.layout.mounts
-        if Path(mount.target) not in system_targets
-    ]
-    for executable in (Path("bin/python"), Path("bin/python3")):
-        for mount in candidates:
-            source = Path(mount.source)
-            if source.is_dir() and (source / executable).is_file():
-                return (str(Path(mount.target) / executable), "-m", "agent_worker")
-    raise SandboxError(
-        f"Runtime {manifest.version} has no mounted bin/python or bin/python3 executable"
-    )
+    return ("app-bin-python", "-m", "agent_worker")
 
 
 class RemoteAgentService:
@@ -110,7 +88,8 @@ class RemoteAgentService:
             patch_submit_callback=self._submit_patch,
             runtime_layout=self.runtime_manifest.layout,
             runtime_version=self.runtime_manifest.version,
-            worker_command=_runtime_worker_command(self.runtime_manifest),
+            runtime_app_path=str(config.remote_base_dir / "app"),
+            worker_command=(str(config.remote_base_dir / "app" / "bin/python"), "-m", "agent_worker"),
             max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
             max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
