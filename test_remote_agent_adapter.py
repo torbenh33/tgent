@@ -62,6 +62,7 @@ def test_lifecycle_methods_forward_operations_and_return_results() -> None:
             {"ok": True, "result": {"state": "review_received"}},
             {"ok": True, "result": {"state": "stopped"}},
             {"ok": True, "result": {"log": "worker output"}},
+            {"ok": True, "result": {"patch_applied_acknowledgement": {"submitted_head": "abc"}}},
             {"ok": True, "result": {"state": "reaped"}},
         ]
     )
@@ -74,9 +75,10 @@ def test_lifecycle_methods_forward_operations_and_return_results() -> None:
     }
     assert adapter.stop("agent-1") == {"state": "stopped"}
     assert adapter.logs("agent-1") == {"log": "worker output"}
+    assert adapter.acknowledge_patch_applied("agent-1")["patch_applied_acknowledgement"]["submitted_head"] == "abc"
     assert adapter.reap("agent-1") == {"state": "reaped"}
     assert [message["operation"] for message in client.messages] == [
-        "status", "history", "continue", "stop", "logs", "reap"
+        "status", "history", "continue", "stop", "logs", "acknowledge_patch_applied", "reap"
     ]
 
 

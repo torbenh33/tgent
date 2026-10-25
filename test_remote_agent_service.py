@@ -152,6 +152,20 @@ def test_dispatch_does_not_expose_unregistered_operations() -> None:
     assert response["error"]["code"] == "request_failed"
 
 
+def test_remote_acknowledgement_delegates_state_validation_to_controller() -> None:
+    from agent_controller import AgentControllerError
+
+    class Controller:
+        async def acknowledge_submitted_patch_applied(self, agent_id):
+            assert agent_id == "agent-1"
+            raise AgentControllerError("Agent has no submitted patch to acknowledge")
+
+    service = RemoteAgentService.__new__(RemoteAgentService)
+    service.controller = Controller()
+    with pytest.raises(AgentControllerError, match="no submitted patch"):
+        asyncio.run(service._acknowledge_patch_applied({"agent_id": "agent-1"}))
+
+
 def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_path: Path) -> None:
     class Snapshot:
         base_commit = "base-sha"

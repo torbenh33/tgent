@@ -124,6 +124,7 @@ class RemoteAgentService:
                 "stop": self._stop,
                 "logs": self._logs,
                 "reap": self._reap,
+                "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "patches": self._patches,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
@@ -249,6 +250,9 @@ class RemoteAgentService:
 
     async def _reap(self, request):
         return await self.controller.reap_agent(request["agent_id"])
+
+    async def _acknowledge_patch_applied(self, request):
+        return await self.controller.acknowledge_submitted_patch_applied(request["agent_id"])
 
     async def _agent_tools(self, request):
         return await self.controller.get_agent_tools(request["agent_id"])

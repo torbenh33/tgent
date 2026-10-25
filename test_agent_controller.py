@@ -186,6 +186,26 @@ async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap
 
 
 @pytest.mark.anyio
+async def test_acknowledge_patch_rejects_missing_patch_and_active_state() -> None:
+    class Store:
+        metadata = {"agent_id": "agent", "state": "running"}
+        def get_metadata(self, _agent_id):
+            return dict(self.metadata)
+        def update_metadata(self, _agent_id, values):
+            self.metadata.update(values)
+            return dict(self.metadata)
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._runtimes = {}
+    with pytest.raises(AgentControllerError, match="no submitted patch"):
+        await controller.acknowledge_submitted_patch_applied("agent")
+    controller.store.metadata.update(state="running", submitted_head="abc")
+    with pytest.raises(AgentControllerError, match="must be inactive"):
+        await controller.acknowledge_submitted_patch_applied("agent")
+
+
+@pytest.mark.anyio
 async def test_reap_rejects_live_awaiting_review_worker(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):

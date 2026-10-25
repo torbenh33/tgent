@@ -140,10 +140,11 @@ async def acknowledge_agent_patch_applied(agent_id: str) -> dict[str, Any]:
     """Explicitly acknowledge an inactive agent's submitted patch as already applied.
 
     Preserves submitted_head and all patch/review artifacts while unlocking reaping.
-    This operation does not apply or verify the patch. Remote mode is unsupported.
+    This operation does not apply or verify the patch.
     """
-    if _remote_adapter() is not None:
-        return {"status": "error", "message": "Patch acknowledgement is not available in remote mode."}
+    remote = _remote_adapter()
+    if remote is not None:
+        return await asyncio.to_thread(remote.acknowledge_patch_applied, agent_id)
     return await _controller().acknowledge_submitted_patch_applied(agent_id)
 
 

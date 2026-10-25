@@ -134,6 +134,10 @@ class RemoteAgentAdapter:
         """Retrieve a bounded tail of the remote worker stderr log."""
         return self._request("logs", agent_id=agent_id, max_bytes=max_bytes)
 
+    def acknowledge_patch_applied(self, agent_id: str) -> dict[str, object]:
+        """Record explicit acknowledgement of an already-applied submitted patch."""
+        return self._request("acknowledge_patch_applied", agent_id=agent_id)
+
     def reap(self, agent_id: str) -> dict[str, object]:
         """Remove a stopped remote agent's snapshot and controller state."""
         return self._request("reap", agent_id=agent_id)

@@ -50,6 +50,18 @@ def test_validates_set_tools_operation_and_rejects_invalid_tool_lists() -> None:
             validate_request({**request, "tools": tools})
 
 
+def test_validates_acknowledge_patch_applied_operation() -> None:
+    request = {
+        "schema_version": 1,
+        "operation": "acknowledge_patch_applied",
+        "request_id": "req-1",
+        "agent_id": "agent-1",
+    }
+    assert validate_request(request) == request
+    with pytest.raises(RemoteProtocolError, match="Invalid fields"):
+        validate_request({**request, "head": "caller-selected"})
+
+
 def test_validates_prepare_upload_operation() -> None:
     request = {
         "schema_version": 1,
