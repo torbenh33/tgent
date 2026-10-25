@@ -180,6 +180,9 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_
     assert result["status"] == "ok"
     assert result["patch_artifact"] == "agent-123.patch"
     artifact = (patches / "agent-123.patch").read_bytes()
-    assert artifact.startswith(b"From abc")
+    # Serializing the parsed mbox rewrites envelope separators to mailbox-generated
+    # `From ` lines, so assert the stable mbox framing rather than git's input bytes.
+    assert artifact.startswith(b"From ")
+    assert artifact.count(b"\nFrom ") == 1
     assert artifact.count(b"Reply-To: agent <agent@localhost>") == 2
     assert "format-patch" in calls[0]
