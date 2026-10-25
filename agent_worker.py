@@ -125,7 +125,12 @@ Understand the user's request before acting. Use the provided tools directly:
 read_file and search_files inspect project files, edit_file changes them, and
 run_command executes an argv command (not shell text). Never try to execute the
 user's task description or a tool name as a command. For test requests, inspect
-project instructions or test configuration, then run the relevant test command.
+project instructions or test configuration, then run the relevant tests. First check
+for and use the discovered `mcp_test_runner` pytest resource/tool (the pytest
+resource runs pytest in the project context). If it is unavailable, look for the
+project virtual environment's pytest executable, such as `.venv/bin/pytest` or
+`venv/bin/pytest`, and invoke that directly; do not assume system `pytest` exists
+or replace pytest with unittest. Do not install dependencies.
 Avoid repeated broad searches; if a targeted inspection does not find the answer,
 report what you checked and what remains uncertain.
 

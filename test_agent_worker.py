@@ -8,7 +8,19 @@ import asyncio
 
 import pytest
 
-from agent_worker import AgentWorker, WorkerError, _edit_file, _read_file, _resolve_project_file, _search_files
+from agent_worker import AgentWorker, SYSTEM_PROMPT, WorkerError, _edit_file, _read_file, _resolve_project_file, _search_files
+
+
+def test_system_prompt_prioritizes_mcp_pytest_and_project_venv() -> None:
+    prompt = SYSTEM_PROMPT
+
+    assert "First check" in prompt
+    assert "discovered `mcp_test_runner` pytest resource/tool" in prompt
+    assert "`.venv/bin/pytest`" in prompt
+    assert "`venv/bin/pytest`" in prompt
+    assert "do not assume system `pytest` exists" in prompt
+    assert "Do not install dependencies" in prompt
+    assert "replace pytest with unittest" in prompt
 
 
 def test_read_file_returns_requested_one_based_lines(tmp_path: Path) -> None:
