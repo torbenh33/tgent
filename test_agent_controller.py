@@ -154,6 +154,8 @@ async def test_reap_rejects_awaiting_review_and_preserves_submitted_artifact(tmp
 
 @pytest.mark.anyio
 async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap(tmp_path) -> None:
+    snapshot = tmp_path / "snapshots" / "agent"
+
     class Store:
         metadata = {"agent_id": "agent", "state": "awaiting_review", "submitted_head": "abc", "snapshot_root": str(snapshot)}
         def get_metadata(self, _agent_id):
@@ -163,7 +165,6 @@ async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap
             return dict(self.metadata)
         def remove(self, _agent_id):
             self.removed = True
-    snapshot = tmp_path / "snapshots" / "agent"
     snapshot.mkdir(parents=True)
     artifact = tmp_path / "review.patch"
     artifact.write_text("review artifact", encoding="utf-8")
@@ -177,6 +178,7 @@ async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap
     assert first["patch_applied_acknowledgement"]["submitted_head"] == "abc"
     assert second["patch_applied_acknowledgement"] == first["patch_applied_acknowledgement"]
     assert store.metadata["submitted_head"] == "abc"
+    await controller.stop_agent("agent")
     with patch("agent_controller.remove_project_snapshot"):
         result = await controller.reap_agent("agent")
     assert result["state"] == "reaped"
