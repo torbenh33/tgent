@@ -138,6 +138,10 @@ class RemoteAgentAdapter:
         """Record explicit acknowledgement of an already-applied submitted patch."""
         return self._request("acknowledge_patch_applied", agent_id=agent_id)
 
+    def reap(self, agent_id: str) -> dict[str, object]:
+        """Reap one eligible remote agent."""
+        return self._request("reap", agent_id=agent_id)
+
     def reap_agents(self, agent_ids: list[str]) -> dict[str, object]:
         """Bulk reap through one remote protocol request."""
         return self._request("reap_agents", agent_ids=agent_ids)

@@ -126,6 +126,7 @@ class RemoteAgentService:
                 "stop_agents": self._stop_agents,
                 "restart_agents": self._restart_agents,
                 "logs": self._logs,
+                "reap": self._reap,
                 "reap_agents": self._reap_agents,
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "nack_patch": self._nack_patch,
@@ -257,6 +258,9 @@ class RemoteAgentService:
 
     async def _restart_agents(self, request):
         return await self.controller.restart_agents(request["agent_ids"])
+
+    async def _reap(self, request):
+        return await self.controller.reap_agent(request["agent_id"])
 
     async def _reap_agents(self, request):
         return await self.controller.reap_agents(request["agent_ids"])

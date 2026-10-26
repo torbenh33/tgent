@@ -669,6 +669,10 @@ class AgentController:
             rejection["reason"] = reason
         return self.store.update_metadata(agent_id, {"patch_rejection": rejection})
 
+    async def reap_agent(self, agent_id: str) -> dict[str, Any]:
+        """Reap one eligible inactive agent, preserving unreviewed submissions."""
+        return await self._reap_agent(agent_id)
+
     async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Safely bulk-reap stopped/failed agents without submitted patches."""
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
@@ -687,7 +691,7 @@ class AgentController:
                 elif metadata.get("state") not in {"stopped", "failed"}:
                     results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
                 else:
-                    results.append({**(await self._reap_agent(agent_id)), "status": "reaped"})
+                    results.append({**(await self.reap_agent(agent_id)), "status": "reaped"})
             except (AgentStoreError, AgentControllerError, OSError) as err:
                 results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
         return {"results": results}
