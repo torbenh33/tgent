@@ -282,7 +282,8 @@ class RemoteAgentService:
         return await self.controller.restart_agents(request["agent_ids"])
 
     async def _reap(self, request):
-        return await self.controller.reap_agent(request["agent_id"])
+        result = await self.controller.reap_agents([request["agent_id"]])
+        return result["results"][0]
 
     async def _reap_agents(self, request):
         return await self.controller.reap_agents(request["agent_ids"])

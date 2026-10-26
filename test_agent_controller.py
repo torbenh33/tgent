@@ -145,8 +145,8 @@ async def test_reap_rejects_awaiting_review_and_preserves_submitted_artifact(tmp
     controller.snapshot_root = tmp_path / "snapshots"
     controller._runtimes = {}
     with patch("agent_controller.remove_project_snapshot") as remove_snapshot:
-        with pytest.raises(AgentControllerError, match="Stop the agent"):
-            await controller.reap_agent("agent")
+        result = await controller.reap_agents(["agent"])
+    assert result["results"][0]["status"] == "excluded"
     remove_snapshot.assert_not_called()
     assert not store.removed
     assert artifact.read_text(encoding="utf-8") == "submitted"
@@ -179,8 +179,9 @@ async def test_acknowledge_applied_patch_is_auditable_idempotent_and_allows_reap
     assert second["patch_applied_acknowledgement"] == first["patch_applied_acknowledgement"]
     assert store.metadata["submitted_head"] == "abc"
     await controller.stop_agent("agent")
-    with patch("agent_controller.remove_project_snapshot"):
-        result = await controller.reap_agent("agent")
+    store.metadata["state"] = "stopped"
+    with patch("agent_controller.remove_project_snapshot"): 
+        result = (await controller.reap_agents(["agent"]))["results"][0]
     assert result["state"] == "reaped"
     assert artifact.read_text(encoding="utf-8") == "review artifact"
 
@@ -230,7 +231,8 @@ async def test_nack_patch_records_reason_idempotently_and_allows_reap(tmp_path) 
     assert "patch_applied_acknowledgement" not in store.metadata
     assert store.metadata["submitted_head"] == "abc"
     with patch("agent_controller.remove_project_snapshot"):
-        await controller.reap_agent("agent")
+        result = await controller.reap_agents(["agent"])
+    assert result["results"][0]["status"] == "reaped"
     assert artifact.read_text(encoding="utf-8") == "submitted artifact"
 
 
@@ -261,8 +263,8 @@ async def test_reap_rejects_live_awaiting_review_worker(tmp_path) -> None:
     controller.snapshot_root = tmp_path / "snapshots"
     controller._runtimes = {"agent": type("Runtime", (), {"process": type("Process", (), {"returncode": None})()})()}
     with patch("agent_controller.remove_project_snapshot") as remove_snapshot:
-        with pytest.raises(AgentControllerError, match="Worker process is still running"):
-            await controller.reap_agent("agent")
+        result = await controller.reap_agents(["agent"])
+    assert result["results"][0]["status"] == "excluded"
     remove_snapshot.assert_not_called()
 
 
@@ -371,6 +373,25 @@ async def test_attention_listing_includes_submitted_and_waiting_agents() -> None
     assert result[2]["attention_reasons"] == ["halted", "awaiting_command"]
 
 @pytest.mark.anyio
+async def test_attention_listing_hides_acknowledged_and_nacked_submissions() -> None:
+    class Store:
+        def get_metadata(self, agent_id):
+            return {
+                "agent_id": agent_id,
+                "state": "stopped",
+                "submitted_head": "abc",
+                "patch_applied_acknowledgement": {"submitted_head": "abc"} if agent_id == "acked" else None,
+                "patch_rejection": {"submitted_head": "abc"} if agent_id == "nacked" else None,
+            }
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    async def agents():
+        return [controller.store.get_metadata(name) for name in ("acked", "nacked", "pending")]
+    controller.list_agents = agents
+    result = await controller.list_agents_requiring_attention()
+    assert [agent["agent_id"] for agent in result] == ["pending"]
+
+@pytest.mark.anyio
 async def test_bulk_reap_preserves_submitted_patch_and_excludes_ineligible(tmp_path) -> None:
     class Store:
         metadata = {
@@ -386,7 +407,7 @@ async def test_bulk_reap_preserves_submitted_patch_and_excludes_ineligible(tmp_p
     async def reap(agent_id):
         assert agent_id == "clean"
         return {"agent_id": agent_id, "state": "reaped"}
-    controller.reap_agent = reap
+    controller._reap_agent = reap
 
     result = await controller.reap_agents(["clean", "patch", "active"])
     assert [item["status"] for item in result["results"]] == ["reaped", "excluded", "excluded"]

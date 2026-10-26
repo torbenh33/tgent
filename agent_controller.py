@@ -614,8 +614,14 @@ class AgentController:
         for metadata in await self.list_agents():
             state = metadata.get("state")
             submitted = bool(metadata.get("submitted_head"))
-            if submitted or state in {"awaiting_review", "halted"} or metadata.get("stop_reason") == "awaiting_command":
-                reasons = (["submitted_patch"] if submitted else [])
+            patch_decision_matches = (
+                (metadata.get("patch_applied_acknowledgement") or {}).get("submitted_head")
+                == metadata.get("submitted_head")
+                or (metadata.get("patch_rejection") or {}).get("submitted_head")
+                == metadata.get("submitted_head")
+            )
+            if (submitted and not patch_decision_matches) or state in {"awaiting_review", "halted"} or metadata.get("stop_reason") == "awaiting_command":
+                reasons = (["submitted_patch"] if submitted and not patch_decision_matches else [])
                 if state in {"awaiting_review", "halted"}: reasons.append(state)
                 if metadata.get("stop_reason") == "awaiting_command": reasons.append("awaiting_command")
                 result.append({**metadata, "requires_attention": True, "attention_reasons": reasons})
@@ -669,10 +675,6 @@ class AgentController:
             rejection["reason"] = reason
         return self.store.update_metadata(agent_id, {"patch_rejection": rejection})
 
-    async def reap_agent(self, agent_id: str) -> dict[str, Any]:
-        """Reap one eligible inactive agent, preserving unreviewed submissions."""
-        return await self._reap_agent(agent_id)
-
     async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Safely bulk-reap stopped/failed agents without submitted patches."""
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
@@ -686,12 +688,17 @@ class AgentController:
             seen.add(agent_id)
             try:
                 metadata = self.store.get_metadata(agent_id)
-                if metadata.get("submitted_head") or metadata.get("state") == "awaiting_review":
-                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review", "submitted_head": metadata.get("submitted_head")})
+                submitted_head = metadata.get("submitted_head")
+                patch_decision_matches = submitted_head and (
+                    (metadata.get("patch_applied_acknowledgement") or {}).get("submitted_head") == submitted_head
+                    or (metadata.get("patch_rejection") or {}).get("submitted_head") == submitted_head
+                )
+                if (submitted_head and not patch_decision_matches) or metadata.get("state") == "awaiting_review":
+                    results.append({"agent_id": agent_id, "status": "excluded", "reason": "submitted_patch_requires_operator_review", "submitted_head": submitted_head})
                 elif metadata.get("state") not in {"stopped", "failed"}:
                     results.append({"agent_id": agent_id, "status": "excluded", "reason": "state_not_stopped_or_failed", "state": metadata.get("state")})
                 else:
-                    results.append({**(await self.reap_agent(agent_id)), "status": "reaped"})
+                    results.append({**(await self._reap_agent(agent_id)), "status": "reaped"})
             except (AgentStoreError, AgentControllerError, OSError) as err:
                 results.append({"agent_id": agent_id, "status": "excluded", "reason": str(err)})
         return {"results": results}

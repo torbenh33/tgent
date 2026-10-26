@@ -125,14 +125,22 @@ async def list_remote_agents() -> list[dict[str, Any]]:
     return await _controller().list_agents()
 
 
+def _patch_decision_matches(agent: dict[str, Any]) -> bool:
+    head = agent.get("submitted_head")
+    return bool(head) and (
+        (agent.get("patch_applied_acknowledgement") or {}).get("submitted_head") == head
+        or (agent.get("patch_rejection") or {}).get("submitted_head") == head
+    )
+
+
 @mcp.tool()
 async def list_agents_requiring_attention() -> list[dict[str, Any]]:
     """List agents awaiting review/commands or carrying submitted patches."""
     remote = _remote_adapter()
     agents = await asyncio.to_thread(remote.list_agents) if remote is not None else await _controller().list_agents_requiring_attention()
     if remote is not None:
-        agents = [a for a in agents if a.get("submitted_head") or a.get("state") in {"awaiting_review", "halted"} or a.get("stop_reason") == "awaiting_command"]
-        agents = [{**a, "requires_attention": True, "attention_reasons": (["submitted_patch"] if a.get("submitted_head") else []) + ([a["state"]] if a.get("state") in {"awaiting_review", "halted"} else []) + (["awaiting_command"] if a.get("stop_reason") == "awaiting_command" else [])} for a in agents]
+        agents = [a for a in agents if (a.get("submitted_head") and not _patch_decision_matches(a)) or a.get("state") in {"awaiting_review", "halted"} or a.get("stop_reason") == "awaiting_command"]
+        agents = [{**a, "requires_attention": True, "attention_reasons": (["submitted_patch"] if a.get("submitted_head") and not _patch_decision_matches(a) else []) + ([a["state"]] if a.get("state") in {"awaiting_review", "halted"} else []) + (["awaiting_command"] if a.get("stop_reason") == "awaiting_command" else [])} for a in agents]
     return agents
 
 @mcp.tool()
