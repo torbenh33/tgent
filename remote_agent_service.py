@@ -122,6 +122,8 @@ class RemoteAgentService:
                 "status": self._status,
                 "history": self._history,
                 "continue": self._continue,
+                "prepare_sync": self._prepare_sync,
+                "finalize_sync": self._finalize_sync,
                 "stop": self._stop,
                 "stop_agents": self._stop_agents,
                 "restart_agents": self._restart_agents,
@@ -246,7 +248,27 @@ class RemoteAgentService:
 
     async def _continue(self, request):
         messages = [dict(message) for message in request["messages"]]
-        return await self.controller.continue_agent(request["agent_id"], messages)
+        return await self.controller.continue_agent(request["agent_id"], messages, sync_callback=lambda project: self._sync_prepared_bundle(request["agent_id"], project))
+
+    def _sync_prepared_bundle(self, agent_id, project):
+        metadata = self.controller.store.get_metadata(agent_id)
+        base = metadata.get("pending_sync_base")
+        if not isinstance(base, str):
+            raise RuntimeError("Continuation bundle has not been finalized")
+        self.controller.store.update_metadata(agent_id, {"pending_sync_base": None})
+        return base
+
+    async def _prepare_sync(self, request):
+        return self.uploads.prepare_sync(request["agent_id"], request["sync_id"])
+
+    async def _finalize_sync(self, request):
+        metadata = self.controller.store.get_metadata(request["agent_id"])
+        snapshot = Path(metadata.get("snapshot_project", ""))
+        if metadata.get("state") not in {"halted", "stopped"} or metadata.get("submitted_head"):
+            raise RuntimeError("Only inactive agents without submitted patches can be synchronized")
+        result = self.uploads.finalize_sync(request["agent_id"], request["sync_id"], request["size"], request["sha256"], request["base_commit"], snapshot)
+        self.controller.store.update_metadata(request["agent_id"], {"pending_sync_base": result["sync_base"]})
+        return result
 
     async def _stop(self, request):
         return await self.controller.stop_agent(request["agent_id"])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 import subprocess
@@ -114,9 +115,31 @@ class RemoteAgentAdapter:
         if not isinstance(summary, str): raise RemoteAgentAdapterError("Remote history summary is invalid")
         return summary
 
-    def continue_agent(self, agent_id: str, messages: list[dict[str, object]]) -> dict[str, object]:
-        """Append operator or review messages and resume a live remote agent."""
-        return self._request("continue", agent_id=agent_id, messages=messages)
+    def continue_agent(self, agent_id: str, messages: list[dict[str, object]], project_root: str | os.PathLike[str] | None = None) -> dict[str, object]:
+        """Synchronize current controller HEAD then continue an inactive remote agent."""
+        if project_root is None:
+            return self._request("continue", agent_id=agent_id, messages=messages)
+        project = Path(project_root).expanduser().resolve(strict=True)
+        base = subprocess.run(["git", "-C", str(project), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+        sync_id = uuid.uuid4().hex
+        bundle = Path(tempfile.mkstemp(prefix="tgit-sync-", suffix=".bundle")[1])
+        try:
+            subprocess.run(["git", "-C", str(project), "bundle", "create", str(bundle), base], check=True, capture_output=True)
+            size = bundle.stat().st_size
+            digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+            ready = self._request("prepare_sync", sync_id=sync_id, agent_id=agent_id)
+            if ready.get("status") != "ready":
+                raise RemoteAgentAdapterError("Remote service rejected continuation sync preparation")
+            remote_path = str(self.config.uploads_dir / "sync" / sync_id / "repository.bundle")
+            subprocess.run((self.rsync, "-a", "--", str(bundle), f"{self.config.ssh_host}:{remote_path}"), check=True)
+            finalized = self._request("finalize_sync", sync_id=sync_id, agent_id=agent_id, size=size, sha256=digest, base_commit=base)
+            if finalized.get("sync_base") != base:
+                raise RemoteAgentAdapterError("Remote continuation sync base mismatch")
+            return self._request("continue", agent_id=agent_id, messages=messages)
+        except (OSError, subprocess.CalledProcessError, RemoteProtocolError) as err:
+            raise RemoteAgentAdapterError(f"Continuation sync failed: {err}") from err
+        finally:
+            bundle.unlink(missing_ok=True)
 
     def get_agent_tools(self, agent_id: str) -> dict[str, object]:
         """Retrieve discovered remote project MCP tools and enabled status."""

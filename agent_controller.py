@@ -754,7 +754,7 @@ class AgentController:
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
         return self.store.get_history(agent_id)
 
-    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, sync_callback: Callable[[Path], str] | None = None) -> dict[str, Any]:
         validate = self.store.get_metadata(agent_id)
         if validate.get("state") not in {"halted", "stopped", "awaiting_review", "review_received"}:
             raise AgentControllerError(f"Agent cannot continue from state {validate.get('state')}")
@@ -785,13 +785,20 @@ class AgentController:
                 raise AgentControllerError("Agent restart is already in progress")
             restarting.add(agent_id)
             try:
+                sync_base = sync_callback(snapshot_project) if sync_callback is not None else None
+                if sync_base is not None and (not isinstance(sync_base, str) or _COMMIT_RE.fullmatch(sync_base) is None):
+                    raise AgentControllerError("Continuation sync returned an invalid base commit")
+                extra = list(messages)
+                if sync_base is not None:
+                    extra.append({"role": "user", "content": f"Controller repository is now synchronized at {sync_base}. Rebase your existing patch/commit queue onto this new base before producing or submitting patches. Preserve every existing agent commit and all operator changes; do not silently discard either. Resolve conflicts carefully and explain any unresolved conflicts."})
                 restarted = await self.start_agent(
-                    {"schema_version": 1, "history": [*history, *messages], "name": validate.get("name", "Agent")},
+                    {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent")},
+                    
                     source_root=snapshot_project,
                 )
             finally:
                 restarting.discard(agent_id)
-            self.store.update_metadata(restarted["agent_id"], {"parent_agent_id": agent_id})
+            self.store.update_metadata(restarted["agent_id"], {"parent_agent_id": agent_id, **({"sync_base": sync_base, "original_base_commit": validate.get("base_commit")} if sync_base is not None else {})})
             return {**restarted, "parent_agent_id": agent_id, "queued_messages": len(messages)}
         self.store.append_history(agent_id, messages)
         command = {"command": "review_feedback", "messages": messages}

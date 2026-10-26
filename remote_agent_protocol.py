@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "prepare_sync", "fin  alize_sync"})
 
 
 class RemoteProtocolError(ValueError):
@@ -53,6 +53,8 @@ def validate_request(value: object) -> dict[str, object]:
     expected: dict[str, set[str]] = {
         "prepare_upload": common | {"upload_id"},
         "finalize_upload": common | {"upload_id"},
+        "prepare_sync": common | {"sync_id", "agent_id"},
+        "finalize_sync": common | {"sync_id", "agent_id", "size", "sha256", "base_commit"},
         "start": common | {"upload_id", "request"},
         "status": common | {"agent_id"},
         "history": common | {"agent_id", "limit"},
@@ -77,8 +79,18 @@ def validate_request(value: object) -> dict[str, object]:
     if value.get("schema_version") != SCHEMA_VERSION:
         raise RemoteProtocolError("Unsupported remote protocol schema version")
     _validate_id(value.get("request_id"), "request_id")
-    if operation in {"prepare_upload", "finalize_upload", "start"}:
-        _validate_id(value.get("upload_id"), "upload_id")
+    if operation in {"prepare_upload", "finalize_upload", "start", "prepare_sync", "finalize_sync"}:
+        if operation in {"prepare_sync", "finalize_sync"}:
+            _validate_id(value.get("sync_id"), "sync_id")
+            _validate_id(value.get("agent_id"), "agent_id")
+            if operation == "finalize_sync":
+                _bounded_int(value.get("size"), "size", 1, 1_073_741_824)
+                if not isinstance(value.get("sha256"), str) or len(value["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in value["sha256"]):
+                    raise RemoteProtocolError("Invalid bundle digest")
+                if not isinstance(value.get("base_commit"), str) or len(value["base_commit"]) not in {40, 64} or any(c not in "0123456789abcdef" for c in value["base_commit"]):
+                    raise RemoteProtocolError("Invalid base commit")
+        else:
+            _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
     elif operation not in {"list_agents", "stop_agents", "pending_patches"}:

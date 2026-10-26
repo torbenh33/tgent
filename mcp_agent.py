@@ -228,7 +228,7 @@ async def continue_agent(agent_id: str, messages: list[dict[str, Any]]) -> dict[
     """
     remote = _remote_adapter()
     if remote is not None:
-        return await asyncio.to_thread(remote.continue_agent, agent_id, messages)
+        return await asyncio.to_thread(remote.continue_agent, agent_id, messages, _PROJECT_ROOT)
     return await _controller().continue_agent(agent_id, messages)
 
 
