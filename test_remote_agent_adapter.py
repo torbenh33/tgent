@@ -82,6 +82,24 @@ def test_lifecycle_methods_forward_operations_and_return_results() -> None:
     ]
 
 
+def test_continue_with_project_rejects_submodule_gitlinks_before_staging(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "base"], check=True)
+    # A mode-160000 tree entry is the superproject's submodule pointer; its
+    # object is not the submodule commit and cannot carry that repository's history.
+    subprocess.run(["git", "-C", str(project), "update-index", "--add", "--cacheinfo", "160000", "0123456789abcdef0123456789abcdef01234567", "vendor/submodule"], check=True)
+    subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "add gitlink"], check=True)
+    client = _FakeClient()
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    with pytest.raises(RemoteAgentAdapterError, match="does not support submodules"):
+        adapter.continue_agent("agent-1", [], project_root=project)
+
+    assert client.messages == []
+
+
 def test_retrieve_patch_downloads_verified_artifact_atomically(tmp_path, monkeypatch) -> None:
     destination = tmp_path / "patches"
     destination.mkdir()
