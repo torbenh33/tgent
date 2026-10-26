@@ -27,7 +27,18 @@ Mock the process boundary; tests must never invoke the real CLI, use network, or
 ## Open questions
 
 1. What exact package, executable, and supported version are intended?
+
+i have put it into the venv now.
+not sure about the actual binary. but at least the python module should be availabel now.
+
 2. What documented noninteractive protocol/schema exists, especially for tools and multi-turn results?
 3. How are model selection, quota, authentication/refresh, and unattended operation handled?
+
+we normally have a config file that configures that.
 4. What data is sent to GitHub, and what privacy policies apply?
+
+it basically sends the whole code right ? its an agent working on the code.
+
 5. Which local/remote deployments will install the CLI, and how will credentials be provisioned without worker exposure?
+
+the worker uses a socket to control with the runner outside the sandbox for the api/llm access. so the normal oerator account on the local machine or the remote machine will be used
