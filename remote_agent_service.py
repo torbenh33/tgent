@@ -253,9 +253,9 @@ class RemoteAgentService:
     def _sync_prepared_bundle(self, agent_id, project):
         metadata = self.controller.store.get_metadata(agent_id)
         base = metadata.get("pending_sync_base")
-        if not isinstance(base, str):
-            raise RuntimeError("Continuation bundle has not been finalized")
-        self.controller.store.update_metadata(agent_id, {"pending_sync_base": None})
+        bundle_path = metadata.get("sync_bundle_path")
+        if not isinstance(base, str) or not isinstance(bundle_path, str) or not Path(bundle_path).is_file():
+            raise RuntimeError("Continuation bundle has not been finalized or staged")
         return base
 
     async def _prepare_sync(self, request):
@@ -263,11 +263,10 @@ class RemoteAgentService:
 
     async def _finalize_sync(self, request):
         metadata = self.controller.store.get_metadata(request["agent_id"])
-        snapshot = Path(metadata.get("snapshot_project", ""))
         if metadata.get("state") not in {"halted", "stopped"} or metadata.get("submitted_head"):
             raise RuntimeError("Only inactive agents without submitted patches can be synchronized")
-        result = self.uploads.finalize_sync(request["agent_id"], request["sync_id"], request["size"], request["sha256"], request["base_commit"], snapshot)
-        self.controller.store.update_metadata(request["agent_id"], {"pending_sync_base": result["sync_base"]})
+        result = self.uploads.finalize_sync(request["agent_id"], request["sync_id"], request["size"], request["sha256"], request["base_commit"])
+        self.controller.store.update_metadata(request["agent_id"], {"pending_sync_base": result["sync_base"], "sync_bundle_path": result["bundle_path"]})
         return result
 
     async def _stop(self, request):

@@ -789,8 +789,7 @@ class AgentController:
                 if sync_base is not None and (not isinstance(sync_base, str) or _COMMIT_RE.fullmatch(sync_base) is None):
                     raise AgentControllerError("Continuation sync returned an invalid base commit")
                 extra = list(messages)
-                if sync_base is not None:
-                    extra.append({"role": "user", "content": f"Controller repository is now synchronized at {sync_base}. Rebase your existing patch/commit queue onto this new base before producing or submitting patches. Preserve every existing agent commit and all operator changes; do not silently discard either. Resolve conflicts carefully and explain any unresolved conflicts."})
+                # Sync instructions are queued by the adapter in the exact continuation request.
                 restarted = await self.start_agent(
                     {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent")},
                     

@@ -70,7 +70,7 @@ class RemoteUploadManager:
         (directory / "agent-id").write_text(agent_id, encoding="ascii")
         return {"sync_id": sync_id, "status": "ready"}
 
-    def finalize_sync(self, agent_id: str, sync_id: str, size: int, digest: str, base_commit: str, snapshot_project: Path) -> dict[str, str]:
+    def finalize_sync(self, agent_id: str, sync_id: str, size: int, digest: str, base_commit: str) -> dict[str, str]:
         _validate_upload_id(agent_id)
         _validate_upload_id(sync_id)
         directory = self.sync_root / sync_id
@@ -85,12 +85,7 @@ class RemoteUploadManager:
             refs = subprocess.run(["git", "bundle", "list-heads", str(bundle)], capture_output=True, text=True, check=True, timeout=30)
             if not any(line.split()[-1] == base_commit for line in refs.stdout.splitlines() if line.split()):
                 raise RemoteUploadError("Bundle does not contain the declared base commit")
-            subprocess.run(["git", "-C", str(snapshot_project), "fetch", str(bundle), base_commit], capture_output=True, check=True, timeout=120)
-            merge = subprocess.run(["git", "-C", str(snapshot_project), "merge", "--no-edit", "--no-ff", base_commit], capture_output=True, text=True, check=False, timeout=120)
-            if merge.returncode:
-                subprocess.run(["git", "-C", str(snapshot_project), "merge", "--abort"], capture_output=True, check=False)
-                raise RemoteUploadError("Continuation sync conflicts with sandbox changes; sandbox left unresumed")
-            return {"status": "synced", "sync_base": base_commit}
+            return {"status": "staged", "sync_base": base_commit, "bundle_path": str(bundle)}
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 

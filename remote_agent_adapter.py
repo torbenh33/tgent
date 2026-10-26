@@ -133,9 +133,10 @@ class RemoteAgentAdapter:
             remote_path = str(self.config.uploads_dir / "sync" / sync_id / "repository.bundle")
             subprocess.run((self.rsync, "-a", "--", str(bundle), f"{self.config.ssh_host}:{remote_path}"), check=True)
             finalized = self._request("finalize_sync", sync_id=sync_id, agent_id=agent_id, size=size, sha256=digest, base_commit=base)
-            if finalized.get("sync_base") != base:
-                raise RemoteAgentAdapterError("Remote continuation sync base mismatch")
-            return self._request("continue", agent_id=agent_id, messages=messages)
+            if finalized.get("sync_base") != base or finalized.get("status") != "staged":
+                raise RemoteAgentAdapterError("Remote continuation sync base mismatch or bundle was not staged")
+            instructions = {"role": "user", "content": f"A Git bundle containing controller commit {base} is staged at {finalized.get('bundle_path')}. Do not assume this sandbox's Git repository has been modified. Fetch this bundle into your repository (for example, `git fetch {finalized.get('bundle_path')} {base}`), then rebase your existing patch/commit queue onto {base} or FETCH_HEAD. Preserve every agent and operator commit, resolve conflicts without discarding either side, and submit subsequent patches against this new base."}
+            return self._request("continue", agent_id=agent_id, messages=[*messages, instructions])
         except (OSError, subprocess.CalledProcessError, RemoteProtocolError) as err:
             raise RemoteAgentAdapterError(f"Continuation sync failed: {err}") from err
         finally:
