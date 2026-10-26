@@ -131,6 +131,7 @@ class RemoteAgentService:
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "nack_patch": self._nack_patch,
                 "patches": self._patches,
+                "pending_patches": self._pending_patches,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
                 "agent_tools": self._agent_tools,
@@ -281,6 +282,27 @@ class RemoteAgentService:
     async def _list_agents(self, request):
         """Return metadata for all registered remote agents."""
         return {"agents": await self.controller.list_agents()}
+
+    async def _pending_patches(self, request):
+        """Enumerate submitted patch metadata in one protocol response."""
+        agents = await self.controller.list_agents()
+        patches = []
+        for agent in agents:
+            agent_id = agent.get("agent_id") or agent.get("id")
+            if not isinstance(agent_id, str):
+                continue
+            metadata = self.controller.store.get_metadata(agent_id)
+            if not metadata.get("submitted_head"):
+                continue
+            path = Path(str(self.config.patches_dir)) / f"{agent_id}.patch"
+            if path.is_symlink() or not path.is_file():
+                continue
+            import hashlib
+            size = path.stat().st_size
+            if size > 16 * 1024 * 1024:
+                continue
+            patches.append({"agent_id": agent_id, "artifact": f"{agent_id}.patch", "bytes": size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "submitted_head": metadata.get("submitted_head"), "base_commit": metadata.get("base_commit"), "state": agent.get("state")})
+        return {"patches": patches}
 
     async def _patches(self, request):
         agent_id = request["agent_id"]

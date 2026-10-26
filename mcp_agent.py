@@ -354,26 +354,42 @@ async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[s
     remote = _remote_adapter()
     if remote is None:
         return {"status": "error", "message": "Remote review requires remote mode.", "agents": []}
-    agents = await asyncio.to_thread(remote.list_agents)
+    try:
+        patches = await asyncio.to_thread(remote.pending_patches)
+    except Exception as err:
+        return {"status": "error", "message": str(err), "agents": []}
+    if not patches:
+        return {"status": "ok", "agents": []}
+    retrieved = await asyncio.to_thread(remote.retrieve_patches, patches, artifact_directory)
     results: list[dict[str, Any]] = []
-    for agent in agents:
-        agent_id = agent.get("agent_id") or agent.get("id")
-        if not isinstance(agent_id, str) or not agent_id:
+    review_module = importlib.import_module("mcp_tgit_review")
+    import hashlib
+    for metadata in patches:
+        agent_id = metadata.get("agent_id")
+        if not isinstance(agent_id, str):
+            continue
+        artifact = retrieved.get(agent_id)
+        if isinstance(artifact, Exception):
+            results.append({"agent_id": agent_id, "status": "error", "message": str(artifact)})
             continue
         try:
-            result = await review_remote_agent(agent_id, artifact_directory)
-            if (result.get("status") == "ok" and not result.get("idempotent")
-                    and agent.get("state") == "halted"):
-                review_module = importlib.import_module("mcp_tgit_review")
-                await asyncio.to_thread(_notify_halted_patch, agent | {"agent_id": agent_id}, result, review_module)
-            if result.get("status") == "unavailable":
-                result = {**result, "status": "skipped", "reason": "no-submission"}
-            elif result.get("idempotent"):
-                result = {**result, "status": "skipped", "reason": "already-imported"}
-            results.append(result)
+            raw = artifact.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != metadata.get("sha256"):
+                raise ValueError("Retrieved artifact digest does not match remote metadata")
+            imported = await asyncio.to_thread(
+                review_module.import_patch_series, raw,
+                base=metadata.get("base_commit"), submitted_head=metadata.get("submitted_head"),
+                repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}", artifact_sha256=digest,
+            )
+            imported = {**imported, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
+            if imported.get("status") == "ok" and not imported.get("idempotent") and metadata.get("state") == "halted":
+                await asyncio.to_thread(_notify_halted_patch, {"agent_id": agent_id, "state": "halted"}, imported, review_module)
+            results.append(imported)
         except Exception as err:
             results.append({"agent_id": agent_id, "status": "error", "message": str(err)})
-    return {"status": "ok", "agents": results}
+    failures = any(item.get("status") == "error" for item in results)
+    return {"status": "partial" if failures else "ok", "agents": results}
 
 
 @mcp.tool()

@@ -200,3 +200,44 @@ def test_start_reports_rsync_failure_without_sending_start_request(tmp_path, mon
         adapter.start(project, {"task": "work"}, upload_id="upload-1")
 
     assert [message["operation"] for message in client.messages] == ["prepare_upload"]
+
+
+def test_batch_patch_enumeration_and_transfer_use_one_call_each(tmp_path, monkeypatch):
+    import hashlib
+    config = RemoteAgentConfig("beep", PurePosixPath("/srv/tgent"))
+    patches = [b"patch one", b"patch two"]
+    metadata = [{"agent_id": f"agent-{i}", "artifact": f"agent-{i}.patch", "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()} for i, raw in enumerate(patches)]
+    client = _FakeClient([{"ok": True, "result": {"patches": metadata}}])
+    adapter = RemoteAgentAdapter(config, client=client)
+    assert adapter.pending_patches() == metadata
+    assert len(client.messages) == 1
+    destination = tmp_path / "patches"; destination.mkdir()
+    calls = []
+    def rsync(argv, **kwargs):
+        calls.append(argv)
+        for item, raw in zip(metadata, patches):
+            (destination / item["artifact"]).write_bytes(raw)
+    monkeypatch.setattr(adapter_module.subprocess, "run", rsync)
+    result = adapter.retrieve_patches(metadata, destination)
+    assert len(calls) == 1
+    assert len([arg for arg in calls[0] if str(arg).startswith("beep:")]) == 2
+    assert all(isinstance(value, Path) for value in result.values())
+
+
+def test_batch_patch_empty_and_partial_metadata_failures(tmp_path, monkeypatch):
+    config = RemoteAgentConfig("beep", PurePosixPath("/srv/tgent"))
+    client = _FakeClient([{"ok": True, "result": {"patches": []}}])
+    adapter = RemoteAgentAdapter(config, client=client)
+    assert adapter.pending_patches() == []
+    destination = tmp_path / "patches"; destination.mkdir()
+    assert adapter.retrieve_patches([], destination) == {}
+    items = [
+        {"agent_id": "agent-good", "artifact": "agent-good.patch", "bytes": 1, "sha256": "0" * 64},
+        {"agent_id": "../bad", "artifact": "../bad.patch", "bytes": 1, "sha256": "0" * 64},
+    ]
+    calls = []
+    monkeypatch.setattr(adapter_module.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    result = adapter.retrieve_patches(items, destination)
+    assert len(calls) == 1
+    assert isinstance(result["../bad"], Exception)
+    assert isinstance(result["agent-good"], Exception)

@@ -158,6 +158,47 @@ class RemoteAgentAdapter:
         """Record operator rejection of an inactive submitted patch."""
         return self._request("nack_patch", agent_id=agent_id, reason=reason)
 
+    def pending_patches(self) -> list[dict[str, object]]:
+        """Enumerate pending patch metadata with one remote protocol call."""
+        result = self._request("pending_patches")
+        patches = result.get("patches")
+        if not isinstance(patches, list):
+            raise RemoteAgentAdapterError("Remote pending patches response is invalid")
+        return patches
+
+    def retrieve_patches(self, patches: list[dict[str, object]], destination: str | os.PathLike[str]) -> dict[str, Path | Exception]:
+        """Transfer validated artifact set in one rsync invocation."""
+        directory = Path(destination).expanduser().resolve()
+        if not directory.is_dir():
+            raise RemoteAgentAdapterError(f"Patch destination is not a directory: {directory}")
+        valid = []
+        results: dict[str, Path | Exception] = {}
+        import re
+        for item in patches:
+            aid, name = item.get("agent_id"), item.get("artifact")
+            if not isinstance(aid, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", aid) is None or name != f"{aid}.patch":
+                if isinstance(aid, str): results[aid] = RemoteAgentAdapterError("Invalid artifact identity")
+                continue
+            size, digest = item.get("bytes"), item.get("sha256")
+            if type(size) is not int or not 0 <= size <= 16 * 1024 * 1024 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                results[aid] = RemoteAgentAdapterError("Invalid artifact metadata")
+                continue
+            valid.append(item)
+        if not valid:
+            return results
+        sources = [f"{self.config.ssh_host}:{shlex.quote(str(self.config.patches_dir / str(item['artifact'])))}" for item in valid]
+        try:
+            subprocess.run((self.rsync, "-a", "--", *sources, os.fspath(directory) + "/"), check=True)
+        except (OSError, subprocess.CalledProcessError) as err:
+            for item in valid: results[str(item["agent_id"])] = RemoteAgentAdapterError(f"Patch batch transfer failed: {err}")
+            return results
+        for item in valid:
+            aid = str(item["agent_id"]); target = directory / str(item["artifact"])
+            if target.is_symlink() or not target.is_file() or target.stat().st_size != item["bytes"] or __import__("hashlib").sha256(target.read_bytes()).hexdigest() != item["sha256"]:
+                results[aid] = RemoteAgentAdapterError("Retrieved artifact does not match metadata")
+            else: results[aid] = target
+        return results
+
     def patches(self, agent_id: str) -> dict[str, object]:
         """Return metadata for the remote patch artifact, if one is available."""
         return self._request("patches", agent_id=agent_id)

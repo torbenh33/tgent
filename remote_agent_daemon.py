@@ -34,7 +34,7 @@ def build_operation_handlers(
         "start": uploads.start_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch"}:
+        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")
@@ -53,7 +53,7 @@ def build_async_operation_handlers(
         "start": uploads.start_async_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch"}:
+        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")
