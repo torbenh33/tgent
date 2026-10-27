@@ -138,6 +138,7 @@ class RemoteAgentService:
                 "set_tools": self._set_tools,
                 "agent_tools": self._agent_tools,
                 "summarize_history": self._summarize_history,
+                "review_replies": self._review_replies,
             },
         )
         self.socket_path = Path(str(config.state_dir)) / "remote-agent.sock"
@@ -245,6 +246,14 @@ class RemoteAgentService:
             return {"summary": content}
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("LLM returned an invalid conversation summary response") from exc
+
+    async def _review_replies(self, request):
+        from mcp_tgit_review import get_review_replies
+
+        return get_review_replies(
+            repo_path=request["repo_path"],
+            unacknowledged_only=request["unacknowledged_only"],
+        )
 
     async def _continue(self, request):
         messages = [dict(message) for message in request["messages"]]

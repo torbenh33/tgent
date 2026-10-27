@@ -17,6 +17,19 @@ from remote_agent_protocol import (
 )
 
 
+def test_review_replies_request_validation():
+    request = {
+        "schema_version": 1,
+        "operation": "review_replies",
+        "request_id": "req-1",
+        "repo_path": "/repo",
+        "unacknowledged_only": False,
+    }
+    assert validate_request(request) == request
+    with pytest.raises(RemoteProtocolError, match="unacknowledged_only must be boolean"):
+        validate_request({**request, "unacknowledged_only": "yes"})
+
+
 def _request(**overrides):
     request = {
         "schema_version": 1,

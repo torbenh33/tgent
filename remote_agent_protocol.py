@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "prepare_sync", "fin  alize_sync"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "prepare_sync", "finalize_sync", "review_replies"})
 
 
 class RemoteProtocolError(ValueError):
@@ -73,6 +73,7 @@ def validate_request(value: object) -> dict[str, object]:
         "set_tools": common | {"agent_id", "tools"},
         "agent_tools": common | {"agent_id"},
         "summarize_history": common | {"agent_id"},
+        "review_replies": common | {"repo_path", "unacknowledged_only"},
     }
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")
@@ -93,6 +94,11 @@ def validate_request(value: object) -> dict[str, object]:
             _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
+    elif operation == "review_replies":
+        if not isinstance(value.get("repo_path"), str) or len(value["repo_path"]) > 4096:
+            raise RemoteProtocolError("repo_path must be bounded text")
+        if not isinstance(value.get("unacknowledged_only"), bool):
+            raise RemoteProtocolError("unacknowledged_only must be boolean")
     elif operation not in {"list_agents", "stop_agents", "pending_patches"}:
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "nack_patch" and (value["reason"] is not None and (not isinstance(value["reason"], str) or len(value["reason"]) > 4000)):

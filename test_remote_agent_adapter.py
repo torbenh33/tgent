@@ -82,6 +82,18 @@ def test_lifecycle_methods_forward_operations_and_return_results() -> None:
     ]
 
 
+def test_review_replies_batches_multiple_messages_in_one_remote_call() -> None:
+    result = {"reviews": [{"review_id": "r-1"}, {"review_id": "r-2"}]}
+    client = _FakeClient([{"ok": True, "result": result}])
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=client)
+
+    assert adapter.review_replies("/repo", unacknowledged_only=True) == result
+    assert len(client.messages) == 1
+    assert client.messages[0]["operation"] == "review_replies"
+    assert client.messages[0]["repo_path"] == "/repo"
+    assert client.messages[0]["unacknowledged_only"] is True
+
+
 def test_continue_with_project_rejects_submodule_gitlinks_before_staging(tmp_path) -> None:
     project = tmp_path / "project"
     project.mkdir()

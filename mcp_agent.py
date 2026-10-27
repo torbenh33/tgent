@@ -117,6 +117,15 @@ async def agents_resource() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+async def get_remote_review_replies(repo_path: str | None = None, unacknowledged_only: bool = False) -> dict[str, Any]:
+    """Fetch all review replies in one request; only available in remote mode."""
+    remote = _remote_adapter()
+    if remote is None:
+        return {"status": "error", "message": "Bulk remote review replies require remote-agent mode"}
+    return await asyncio.to_thread(remote.review_replies, repo_path or str(_PROJECT_ROOT), unacknowledged_only=unacknowledged_only)
+
+
+@mcp.tool()
 async def list_remote_agents() -> list[dict[str, Any]]:
     """List all agents managed by the local or remote controller."""
     remote = _remote_adapter()

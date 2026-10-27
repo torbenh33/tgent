@@ -115,6 +115,10 @@ class RemoteAgentAdapter:
         if not isinstance(summary, str): raise RemoteAgentAdapterError("Remote history summary is invalid")
         return summary
 
+    def review_replies(self, repo_path: str = ".", *, unacknowledged_only: bool = False) -> dict[str, object]:
+        """Fetch review replies across all local series in one remote request."""
+        return self._request("review_replies", repo_path=repo_path, unacknowledged_only=unacknowledged_only)
+
     def continue_agent(self, agent_id: str, messages: list[dict[str, object]], project_root: str | os.PathLike[str] | None = None) -> dict[str, object]:
         """Synchronize current controller HEAD then continue an inactive remote agent."""
         if project_root is None:
