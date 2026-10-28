@@ -335,7 +335,10 @@ async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str
     Requires a clean repository and an existing patch file. Empty messages in
     the mbox, such as format-patch cover letters, are dropped; non-empty patch
     failures remain errors and may leave a Git am session requiring recovery.
-    Pass agent_id for a remote submission; successful application stops it via the configured remote adapter. Local agents are not stopped by this tool.
+    Pass agent_id to acknowledge the submitted patch after application succeeds.
+    The associated agent is stopped first when needed; without agent_id, no
+    agent lifecycle or acknowledgement action is performed. If applying fails,
+    no stop or acknowledgement is attempted.
     """
     if not isinstance(repo_path, str) or not repo_path.strip():
         return {"status": "error", "message": "repo_path must be provided."}
@@ -373,9 +376,10 @@ async def apply_agent_patch(patch_path: str, repo_path: str = ".", agent_id: str
             if remote is not None:
                 result["agent_stop"] = await asyncio.to_thread(remote.stop, agent_id)
             else:
-                result["agent_stop"] = {"status": "skipped", "message": "Local agent lifecycle is not coupled to patch application."}
+                result["agent_stop"] = await mcp_agent.stop_agent(agent_id)
+            result["patch_acknowledgement"] = await mcp_agent.acknowledge_agent_patch_applied(agent_id)
         except Exception as err:
-            result["agent_stop"] = {"status": "error", "message": str(err)}
+            result["patch_acknowledgement"] = {"status": "error", "message": str(err)}
     return result
 
 
