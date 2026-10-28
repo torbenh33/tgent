@@ -125,6 +125,18 @@ class RemoteAgentAdapter:
             return self._request("continue", agent_id=agent_id, messages=messages)
         project = Path(project_root).expanduser().resolve(strict=True)
         base = subprocess.run(["git", "-C", str(project), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+        # A superproject bundle contains only its own object database. Gitlink
+        # entries name commits in independent submodule repositories, which are
+        # not included by `git bundle create`; reject before making any remote
+        # requests rather than staging an apparently complete but unusable sync.
+        tree = subprocess.run(
+            ["git", "-C", str(project), "ls-tree", "-r", "-z", base],
+            capture_output=True, check=True,
+        ).stdout
+        if any(entry.startswith(b"160000 commit ") for entry in tree.split(b"\0") if entry):
+            raise RemoteAgentAdapterError(
+                "Continuation sync does not support submodules: the superproject bundle omits submodule repository history"
+            )
         # The agent snapshot already contains its recorded base. If the
         # controller has not advanced, there is nothing to synchronize; avoid
         # creating an empty bundle and continue directly.
@@ -132,18 +144,6 @@ class RemoteAgentAdapter:
         agent_base = status.get("base_commit")
         if isinstance(agent_base, str) and agent_base.lower() == base.lower():
             return self._request("continue", agent_id=agent_id, messages=messages)
-        # A superproject bundle contains only its own object database. Gitlink
-        # entries name commits in independent submodule repositories, which are
-        # not included by `git bundle create`; reject rather than stage an
-        # apparently complete but unusable sync.
-        tree = subprocess.run(
-            ["git", "-C", str(project), "ls-tree", "-r", "-z", base],
-            capture_output=True, check=True,
-        ).stdout
-        if any(entry.startswith(b"160000 commit ") for entry in tree.split(b"\\0") if entry):
-            raise RemoteAgentAdapterError(
-                "Continuation sync does not support submodules: the superproject bundle omits submodule repository history"
-            )
         sync_id = uuid.uuid4().hex
         descriptor, bundle_name = tempfile.mkstemp(prefix="tgit-sync-", suffix=".bundle")
         os.close(descriptor)
