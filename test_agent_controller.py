@@ -8,6 +8,38 @@ from importlib.metadata import EntryPoint, EntryPoints
 from unittest.mock import patch
 
 from agent_controller import AgentController, AgentControllerError
+from agent_store import AgentStore
+
+
+def test_resolve_agent_id_prefix_validation_and_canonical_full_id(tmp_path) -> None:
+    store = AgentStore(tmp_path / "state")
+    for agent_id in ("abcdef001122", "abcdef991122"):
+        store.create(agent_id, {"agent_id": agent_id, "state": "halted"}, [])
+    controller = AgentController.__new__(AgentController)
+    controller.store = store
+
+    assert controller.resolve_agent_id("abcdef001122") == "abcdef001122"
+    with pytest.raises(AgentControllerError, match="Ambiguous"):
+        controller.resolve_agent_id("abcdef")
+    with pytest.raises(AgentControllerError, match="Unknown"):
+        controller.resolve_agent_id("deadbeef")
+    with pytest.raises(Exception, match="Invalid agent_id"):
+        controller.resolve_agent_id("abc!")
+
+
+@pytest.mark.anyio
+async def test_status_history_and_stop_resolve_unique_prefix(tmp_path) -> None:
+    agent_id = "1234abcd5678"
+    store = AgentStore(tmp_path / "state")
+    store.create(agent_id, {"agent_id": agent_id, "state": "halted"}, [{"role": "user", "content": "x"}])
+    controller = AgentController.__new__(AgentController)
+    controller.store = store
+    controller._runtimes = {}
+
+    assert (await controller.get_status("1234"))["agent_id"] == agent_id
+    assert await controller.get_history("1234") == [{"role": "user", "content": "x"}]
+    with pytest.raises(AgentControllerError, match="Ambiguous|Unknown"):
+        await controller.stop_agent("ffff")
 
 
 def test_start_request_seeds_copilotchat_user_message() -> None:

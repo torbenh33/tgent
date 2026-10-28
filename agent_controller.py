@@ -431,6 +431,7 @@ class AgentController:
         return {"reported": len(valid)}
 
     async def get_agent_tools(self, agent_id: str) -> dict[str, Any]:
+        agent_id = self.resolve_agent_id(agent_id)
         metadata = self.store.get_metadata(agent_id)
         enabled = self._tool_allowlists.get(agent_id, set())
         modules = [{**item, "enabled": item["name"] in enabled} for item in self._tool_catalogs.get(agent_id, [])]
@@ -440,6 +441,7 @@ class AgentController:
 
     async def set_agent_tools(self, agent_id: str, tools: list[str]) -> dict[str, Any]:
         """Set opt-in MCP module names for a live agent (trusted operator API)."""
+        agent_id = self.resolve_agent_id(agent_id)
         if not isinstance(tools, list) or any(not isinstance(name, str) or re.fullmatch(r"mcp_[A-Za-z0-9_-]+", name) is None for name in tools):
             raise AgentControllerError("tools must be MCP module names such as mcp_example")
         if len(set(tools)) != len(tools):
@@ -610,8 +612,34 @@ class AgentController:
         agents.sort(key=lambda metadata: (metadata.get("created_at", 0), metadata.get("agent_id", "")))
         return agents
 
+    def resolve_agent_id(self, agent_id: str) -> str:
+        """Resolve a full ID or a unique hexadecimal prefix against stored agents."""
+        validate_agent_id(agent_id)
+        try:
+            self.store.get_metadata(agent_id)
+            return agent_id
+        except AgentStoreError:
+            pass
+        if not re.fullmatch(r"[0-9a-fA-F]+", agent_id):
+            raise AgentControllerError(f"Unknown agent ID or invalid hexadecimal prefix: {agent_id}")
+        matches = []
+        for entry in self.store.state_root.iterdir():
+            if entry.name == "logs" or entry.is_symlink() or not entry.is_dir():
+                continue
+            if entry.name.lower().startswith(agent_id.lower()):
+                try:
+                    self.store.get_metadata(entry.name)
+                    matches.append(entry.name)
+                except AgentStoreError:
+                    continue
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise AgentControllerError(f"Unknown agent ID prefix: {agent_id}")
+        raise AgentControllerError(f"Ambiguous agent ID prefix: {agent_id}")
+
     async def get_status(self, agent_id: str) -> dict[str, Any]:
-        return self.store.get_metadata(agent_id)
+        return self.store.get_metadata(self.resolve_agent_id(agent_id))
 
     async def list_agents_requiring_attention(self) -> list[dict[str, Any]]:
         """List agents awaiting operator input or carrying submitted patches."""
@@ -682,6 +710,7 @@ class AgentController:
 
     async def reap_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Safely bulk-reap stopped/failed agents without submitted patches."""
+        agent_ids = [self.resolve_agent_id(item) for item in agent_ids] if isinstance(agent_ids, list) else agent_ids
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(item, str) for item in agent_ids):
             raise AgentControllerError("agent_ids must be a non-empty list of agent IDs")
         results = []
@@ -710,6 +739,8 @@ class AgentController:
 
     async def stop_agents(self, agent_ids: list[str] | None = None) -> dict[str, Any]:
         """Stop eligible workers in bulk; submitted-patch workers are preserved for review."""
+        if isinstance(agent_ids, list):
+            agent_ids = [self.resolve_agent_id(item) for item in agent_ids]
         selected = agent_ids if agent_ids is not None else [a["agent_id"] for a in await self.list_agents()]
         if not isinstance(selected, list) or any(not isinstance(i, str) for i in selected):
             raise AgentControllerError("agent_ids must be a list of agent IDs")
@@ -731,6 +762,7 @@ class AgentController:
 
     async def restart_agents(self, agent_ids: list[str]) -> dict[str, Any]:
         """Recover eligible stopped agents as new children, retaining original history/snapshot."""
+        agent_ids = [self.resolve_agent_id(item) for item in agent_ids] if isinstance(agent_ids, list) else agent_ids
         if not isinstance(agent_ids, list) or not agent_ids or any(not isinstance(i, str) for i in agent_ids):
             raise AgentControllerError("agent_ids must be a non-empty list of agent IDs")
         results = []
@@ -748,7 +780,7 @@ class AgentController:
 
     async def get_agent_log(self, agent_id: str, *, max_bytes: int = 64 * 1024) -> dict[str, Any]:
         """Return the bounded tail of a worker's captured stderr log."""
-        validate_agent_id(agent_id)
+        agent_id = self.resolve_agent_id(agent_id)
         if type(max_bytes) is not int or not 1 <= max_bytes <= 1024 * 1024:
             raise AgentControllerError("max_bytes must be between 1 and 1048576")
         self.store.get_metadata(agent_id)
@@ -764,9 +796,10 @@ class AgentController:
         return {"agent_id": agent_id, "log": content, "truncated": truncated}
 
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
-        return self.store.get_history(agent_id)
+        return self.store.get_history(self.resolve_agent_id(agent_id))
 
     async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, sync_callback: Callable[[Path], str] | None = None, sync_bundle_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+        agent_id = self.resolve_agent_id(agent_id)
         validate = self.store.get_metadata(agent_id)
         if validate.get("state") not in {"halted", "stopped", "awaiting_review", "review_received"}:
             raise AgentControllerError(f"Agent cannot continue from state {validate.get('state')}")
@@ -829,6 +862,7 @@ class AgentController:
         return {"agent_id": agent_id, "state": "review_received", "queued_messages": len(messages)}
 
     async def stop_agent(self, agent_id: str) -> dict[str, Any]:
+        agent_id = self.resolve_agent_id(agent_id)
         runtime = self._runtimes.get(agent_id)
         if runtime is None:
             metadata = self.store.get_metadata(agent_id)

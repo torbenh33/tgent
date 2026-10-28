@@ -185,7 +185,7 @@ async def reap_agents(agent_ids: list[str]) -> dict[str, Any]:
 
 @mcp.tool()
 async def get_agent_status(agent_id: str) -> dict[str, Any]:
-    """Return persisted controller metadata for an agent."""
+    """Return persisted metadata; agent_id may be a unique hexadecimal SHA prefix."""
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.status, agent_id)
@@ -203,7 +203,7 @@ async def get_agent_log(agent_id: str, max_bytes: int = 65536) -> dict[str, Any]
 
 @mcp.tool()
 async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
-    """Return the complete CopilotChat-format conversation message array."""
+    """Return conversation messages; agent_id may be a unique hexadecimal SHA prefix."""
     remote = _remote_adapter()
     if remote is not None:
         result = await asyncio.to_thread(remote.history, agent_id)
@@ -290,7 +290,7 @@ async def restart_agents(agent_ids: list[str]) -> dict[str, Any]:
 
 @mcp.tool()
 async def stop_agent(agent_id: str) -> dict[str, Any]:
-    """Request worker shutdown and wait for its process to exit."""
+    """Stop worker by full ID or unique hexadecimal SHA prefix."""
     remote = _remote_adapter()
     if remote is not None:
         return await asyncio.to_thread(remote.stop, agent_id)
