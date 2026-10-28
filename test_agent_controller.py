@@ -356,7 +356,7 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
 async def test_continue_with_sync_bundle_mounts_fixed_read_only_source(tmp_path) -> None:
     class Store:
         def get_metadata(self, _agent_id):
-            return {"agent_id": "old", "state": "halted", "snapshot_root": str(snapshot_root),
+            return {"agent_id": "old", "state": "halted", "base_commit": "b" * 40, "snapshot_root": str(snapshot_root),
                     "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
 
         def get_history(self, _agent_id):
@@ -385,6 +385,8 @@ async def test_continue_with_sync_bundle_mounts_fixed_read_only_source(tmp_path)
         "old", [{"role": "user", "content": "continue"}],
         sync_callback=lambda _project: "a" * 40, sync_bundle_path=bundle,
     )
+    assert calls[0]["_effective_base_commit"] == "a" * 40
+    assert calls[0]["_original_base_commit"] == "b" * 40
     mount, = calls[0]["_extra_runtime_mounts"]
     assert mount.source == bundle.resolve()
     assert mount.target == Path("/run/agent-sync/repository.bundle")
