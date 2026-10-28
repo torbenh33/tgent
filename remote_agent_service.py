@@ -287,7 +287,17 @@ class RemoteAgentService:
         metadata = self.controller.store.get_metadata(request["agent_id"])
         if metadata.get("state") not in {"halted", "stopped"} or metadata.get("submitted_head"):
             raise RuntimeError("Only inactive agents without submitted patches can be synchronized")
-        result = self.uploads.finalize_sync(request["agent_id"], request["sync_id"], request["size"], request["sha256"], request["base_commit"])
+        repository_path = metadata.get("snapshot_project")
+        if not isinstance(repository_path, str):
+            raise RuntimeError("Continuation agent snapshot has no Git repository path")
+        result = self.uploads.finalize_sync(
+            request["agent_id"],
+            request["sync_id"],
+            request["size"],
+            request["sha256"],
+            request["base_commit"],
+            repository_path,
+        )
         self.controller.store.update_metadata(request["agent_id"], {"pending_sync_base": result["sync_base"], "sync_bundle_path": result["bundle_path"]})
         return result
 

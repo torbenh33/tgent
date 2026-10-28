@@ -145,9 +145,21 @@ class RemoteAgentAdapter:
                 "Continuation sync does not support submodules: the superproject bundle omits submodule repository history"
             )
         sync_id = uuid.uuid4().hex
-        bundle = Path(tempfile.mkstemp(prefix="tgit-sync-", suffix=".bundle")[1])
+        descriptor, bundle_name = tempfile.mkstemp(prefix="tgit-sync-", suffix=".bundle")
+        os.close(descriptor)
+        bundle = Path(bundle_name)
+        # `git bundle create` requires a path that does not already exist.
+        bundle.unlink()
         try:
-            subprocess.run(["git", "-C", str(project), "bundle", "create", str(bundle), base], check=True, capture_output=True)
+            subprocess.run(
+                # Include the base commit as a ref as well as HEAD. A range-only
+                # bundle records the base as a prerequisite, but the remote
+                # service verifies the uploaded bundle outside the agent's Git
+                # repository and therefore cannot resolve that prerequisite.
+                ["git", "-C", str(project), "bundle", "create", str(bundle), agent_base, "HEAD"],
+                check=True,
+                capture_output=True,
+            )
             size = bundle.stat().st_size
             digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
             ready = self._request("prepare_sync", sync_id=sync_id, agent_id=agent_id)
