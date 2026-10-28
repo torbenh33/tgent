@@ -256,8 +256,21 @@ class RemoteAgentService:
         )
 
     async def _continue(self, request):
+        agent_id = request["agent_id"]
         messages = [dict(message) for message in request["messages"]]
-        return await self.controller.continue_agent(request["agent_id"], messages, sync_callback=lambda project: self._sync_prepared_bundle(request["agent_id"], project))
+        metadata = self.controller.store.get_metadata(agent_id)
+        has_pending_sync = (
+            metadata.get("pending_sync_base") is not None
+            or metadata.get("sync_bundle_path") is not None
+        )
+        sync_callback = (
+            (lambda project: self._sync_prepared_bundle(agent_id, project))
+            if has_pending_sync
+            else None
+        )
+        return await self.controller.continue_agent(
+            agent_id, messages, sync_callback=sync_callback
+        )
 
     def _sync_prepared_bundle(self, agent_id, project):
         metadata = self.controller.store.get_metadata(agent_id)

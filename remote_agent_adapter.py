@@ -125,6 +125,13 @@ class RemoteAgentAdapter:
             return self._request("continue", agent_id=agent_id, messages=messages)
         project = Path(project_root).expanduser().resolve(strict=True)
         base = subprocess.run(["git", "-C", str(project), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+        # The agent snapshot already contains its recorded base. If the
+        # controller has not advanced, there is nothing to synchronize; avoid
+        # creating an empty bundle and continue directly.
+        status = self._request("status", agent_id=agent_id)
+        agent_base = status.get("base_commit")
+        if isinstance(agent_base, str) and agent_base.lower() == base.lower():
+            return self._request("continue", agent_id=agent_id, messages=messages)
         # A superproject bundle contains only its own object database. Gitlink
         # entries name commits in independent submodule repositories, which are
         # not included by `git bundle create`; reject rather than stage an
