@@ -131,6 +131,9 @@ resource runs pytest in the project context). If it is unavailable, look for the
 project virtual environment's pytest executable, such as `.venv/bin/pytest` or
 `venv/bin/pytest`, and invoke that directly; do not assume system `pytest` exists
 or replace pytest with unittest. Do not install dependencies.
+For continuation syncs, fetch `/run/agent-sync/repository.bundle` and rebase onto
+the supplied sync base commit before continuing work. The bundle is read-only.
+
 Avoid repeated broad searches; if a targeted inspection does not find the answer,
 report what you checked and what remains uncertain.
 

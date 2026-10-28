@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 from importlib.metadata import EntryPoint, EntryPoints
 from unittest.mock import patch
 
@@ -304,8 +305,8 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
     controller._runtimes = {}
     calls = []
 
-    async def start(request, *, source_root=None):
-        calls.append((request, source_root))
+    async def start(request, *, source_root=None, **kwargs):
+        calls.append((request, source_root, kwargs))
         return {"status": "ok", "agent_id": "new", "state": "running"}
 
     controller.start_agent = start
@@ -316,6 +317,45 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
         {"role": "user", "content": "original"}, {"role": "user", "content": "more"}
     ]
     assert calls[0][1] == snapshot_project
+    assert calls[0][2] == {}
+
+
+@pytest.mark.anyio
+async def test_continue_with_sync_bundle_mounts_fixed_read_only_source(tmp_path) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": "halted", "snapshot_root": str(snapshot_root),
+                    "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
+
+        def get_history(self, _agent_id):
+            return []
+
+        def update_metadata(self, _agent_id, _values):
+            return {}
+
+    snapshot_root = tmp_path / "snapshots" / "old"
+    snapshot_project = snapshot_root / "project"
+    snapshot_project.mkdir(parents=True)
+    bundle = tmp_path / "verified.bundle"
+    bundle.write_bytes(b"bundle")
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    calls = []
+
+    async def start(request, *, source_root=None, **kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "agent_id": "new", "state": "running"}
+
+    controller.start_agent = start
+    await controller.continue_agent(
+        "old", [{"role": "user", "content": "continue"}],
+        sync_callback=lambda _project: "a" * 40, sync_bundle_path=bundle,
+    )
+    mount, = calls[0]["_extra_runtime_mounts"]
+    assert mount.source == bundle.resolve()
+    assert mount.target == Path("/run/agent-sync/repository.bundle")
 
 
 @pytest.mark.anyio

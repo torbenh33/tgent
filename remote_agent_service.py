@@ -268,9 +268,15 @@ class RemoteAgentService:
             if has_pending_sync
             else None
         )
-        return await self.controller.continue_agent(
-            agent_id, messages, sync_callback=sync_callback
+        bundle_path = metadata.get("sync_bundle_path") if has_pending_sync else None
+        result = await self.controller.continue_agent(
+            agent_id, messages, sync_callback=sync_callback, sync_bundle_path=bundle_path
         )
+        if has_pending_sync:
+            # The child mount references the staged file independently; retain the
+            # file for the worker lifetime, but consume the parent's pending state.
+            self.controller.store.update_metadata(agent_id, {"pending_sync_base": None, "sync_bundle_path": None})
+        return result
 
     def _sync_prepared_bundle(self, agent_id, project):
         metadata = self.controller.store.get_metadata(agent_id)

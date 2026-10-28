@@ -28,6 +28,7 @@ from agent_sandbox import (
     SandboxCommand,
     SandboxPolicy,
     SandboxRuntimeLayout,
+    RuntimeMount,
     build_runtime_layout,
     build_sandbox_command,
 )
@@ -250,6 +251,7 @@ class AgentController:
         request: dict[str, Any],
         *,
         source_root: str | os.PathLike[str] | None = None,
+        _extra_runtime_mounts: tuple[Any, ...] = (),
     ) -> dict[str, Any]:
         """Start an agent from the controller project or a trusted uploaded checkout.
 
@@ -338,7 +340,10 @@ class AgentController:
                     "AGENT_BASE_COMMIT": snapshot.base_commit,
                     "PYTHONPATH": str(self.runtime_app_path),
                 },
-                runtime_layout=self.runtime_layout,
+                runtime_layout=SandboxRuntimeLayout(
+                    self.runtime_layout.mounts + tuple(_extra_runtime_mounts),
+                    self.runtime_layout.symlinks,
+                ),
             )
             log_path = self.log_root / f"{agent_id}.log"
             log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -761,7 +766,7 @@ class AgentController:
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
         return self.store.get_history(agent_id)
 
-    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, sync_callback: Callable[[Path], str] | None = None) -> dict[str, Any]:
+    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, sync_callback: Callable[[Path], str] | None = None, sync_bundle_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         validate = self.store.get_metadata(agent_id)
         if validate.get("state") not in {"halted", "stopped", "awaiting_review", "review_received"}:
             raise AgentControllerError(f"Agent cannot continue from state {validate.get('state')}")
@@ -797,10 +802,21 @@ class AgentController:
                     raise AgentControllerError("Continuation sync returned an invalid base commit")
                 extra = list(messages)
                 # Sync instructions are queued by the adapter in the exact continuation request.
+                extra_mounts = ()
+                if sync_callback is not None:
+                    if sync_bundle_path is None:
+                        raise AgentControllerError("Continuation bundle path is required for sync")
+                    bundle = Path(sync_bundle_path)
+                    if bundle.is_symlink() or not bundle.is_file():
+                        raise AgentControllerError("Continuation bundle is unavailable")
+                    bundle = bundle.resolve(strict=True)
+                    extra_mounts = (RuntimeMount(bundle, Path("/run/agent-sync/repository.bundle")),)
+                start_options = {"source_root": snapshot_project}
+                if extra_mounts:
+                    start_options["_extra_runtime_mounts"] = extra_mounts
                 restarted = await self.start_agent(
                     {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent")},
-                    
-                    source_root=snapshot_project,
+                    **start_options,
                 )
             finally:
                 restarting.discard(agent_id)
