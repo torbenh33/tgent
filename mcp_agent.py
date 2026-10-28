@@ -53,6 +53,7 @@ async def _submit_patch(snapshot: Any, params: dict[str, Any]) -> dict[str, Any]
         base=snapshot.base_commit,
         head=params["head_commit"],
         repo_path=str(snapshot.project_root),
+        agent_history_summary=await summarize_agent_history(params["agent_id"]),
     )
     if not isinstance(result, dict) or result.get("status") != "ok":
         raise RuntimeError(f"Patch queue export failed: {result}")

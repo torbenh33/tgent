@@ -7,6 +7,18 @@ from unittest.mock import patch
 import mcp_tgit_review as review
 
 
+class AgentHistoryCoverLetterTests(unittest.TestCase):
+    def test_generated_history_summary_replaces_cover_letter_blurb_placeholder(self):
+        message = review.email.message.EmailMessage()
+        message.set_content("Series summary\n\n*** BLURB HERE ***\n\ndiffstat")
+        with patch.object(review, "_body", return_value=message.get_content()):
+            review._include_agent_history_summary(message, "Implemented feature\nTests pass")
+        self.assertEqual(
+            message.get_content(),
+            "Series summary\n\nAgent history summary:\nImplemented feature\nTests pass\n\ndiffstat",
+        )
+
+
 class BulkReviewReportTests(unittest.TestCase):
     def test_reports_all_replies_for_repo_without_mutating_manifests(self):
         with tempfile.TemporaryDirectory() as temporary:

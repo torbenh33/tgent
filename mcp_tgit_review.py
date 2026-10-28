@@ -160,6 +160,19 @@ def _apply_reply_to(raw: bytes, reply_to: str) -> bytes:
     return _serialize_mbox(messages)
 
 
+def _include_agent_history_summary(message: Message, summary: str) -> None:
+    """Insert an already-generated agent summary into a cover-letter body."""
+    if not summary.strip():
+        return
+    body = _body(message)
+    block = f"Agent history summary:\n{summary.strip()}"
+    if "*** BLURB HERE ***" in body:
+        body = body.replace("*** BLURB HERE ***", block, 1)
+    else:
+        body = block + "\n\n" + body
+    message.set_content(body)
+
+
 def _serialize_mbox(messages: list[Message]) -> bytes:
     """Serialize messages as an mbox after any header/body edits."""
     with tempfile.NamedTemporaryFile() as handle:
@@ -228,6 +241,7 @@ def export_patch_series(
     repo_path: str = ".",
     series_id: str | None = None,
     cover_letter: str = "",
+    agent_history_summary: str = "",
 ) -> dict[str, Any]:
     """Export ``base..head`` as an mbox, creating or revising a review series.
 
@@ -236,7 +250,8 @@ def export_patch_series(
     Git generates patch 0 with the series summary and diffstat. If supplied,
     ``cover_letter`` uses its first line as the subject and remaining lines as
     introductory text in place of Git's blurb placeholder, preserving the
-    generated summary and diffstat. This only reads committed Git
+    generated summary and diffstat. The supplied ``agent_history_summary`` is
+    included in multi-patch cover letters. This only reads committed Git
     history and does not alter the worktree. Pass the returned mbox_path to Mutt;
     pass its series_id again for a new revision.
     """
@@ -342,6 +357,9 @@ def export_patch_series(
             1,
         )
         patches[0].set_content(generated_body)
+
+    if commit_count > 1:
+        _include_agent_history_summary(patches[0], agent_history_summary)
 
     # Serialize the modified messages unconditionally: format-patch's raw mbox
     # does not include headers added to the parsed Message objects above.

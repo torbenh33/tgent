@@ -558,7 +558,7 @@ class AgentController:
         _stdout, stderr = await check.communicate()
         if check.returncode != 0:
             raise AgentControllerError(f"Patch head is not based on the recorded base commit: {stderr.decode(errors='replace')}")
-        result = self.patch_submit_callback(snapshot, params)
+        result = self.patch_submit_callback(snapshot, {**params, "agent_id": agent_id})
         if inspect.isawaitable(result):
             result = await result
         self.store.update_metadata(agent_id, {"state": "awaiting_review", "submitted_head": head})
