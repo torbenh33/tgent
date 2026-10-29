@@ -15,7 +15,7 @@ class AgentHistoryCoverLetterTests(unittest.TestCase):
             review._include_agent_history_summary(message, "Implemented feature\nTests pass")
         self.assertEqual(
             message.get_content(),
-            "Series summary\n\nAgent history summary:\nImplemented feature\nTests pass\n\ndiffstat",
+            "Series summary\n\nAgent history summary:\nImplemented feature\nTests pass\n\ndiffstat\n",
         )
 
 
