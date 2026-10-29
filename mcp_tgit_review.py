@@ -249,9 +249,9 @@ def export_patch_series(
     mboxes contain only the patch.
     Git generates patch 0 with the series summary and diffstat. If supplied,
     ``cover_letter`` uses its first line as the subject and remaining lines as
-    introductory text in place of Git's blurb placeholder, preserving the
-    generated summary and diffstat. The supplied ``agent_history_summary`` is
-    included in multi-patch cover letters. This only reads committed Git
+    introductory text in place of Git's blurb placeholder; otherwise a stable
+    subject and introductory summary are derived from commit subjects. Single-
+    commit exports intentionally contain no cover letter. This only reads committed Git
     history and does not alter the worktree. Pass the returned mbox_path to Mutt;
     pass its series_id again for a new revision.
     """
@@ -351,11 +351,17 @@ def export_patch_series(
         generated_body = generated_body.replace("*** BLURB HERE ***", introduction, 1)
         patches[0].set_content(generated_body)
     elif commit_count > 1:
-        generated_body = _body(patches[0]).replace(
-            "*** BLURB HERE ***",
-            f"This series contains {commit_count} patches.",
-            1,
-        )
+        # Derive a deterministic, useful subject from the commit subjects; Git's
+        # default cover subject is the literal placeholder "*** SUBJECT HERE ***".
+        subjects = _git(repo, ["log", "--no-merges", "--format=%s", "--reverse", f"{base_sha}..{head_sha}"])
+        commit_subjects = [line.strip() for line in subjects.stdout.splitlines() if line.strip()]
+        summary = "; ".join(commit_subjects[:3])
+        if len(commit_subjects) > 3:
+            summary += f"; and {len(commit_subjects) - 3} more"
+        summary = summary or f"{commit_count} patch series"
+        patches[0].replace_header("Subject", f"[PATCH 0/{commit_count}] {summary}")
+        generated_body = _body(patches[0])
+        generated_body = generated_body.replace("*** BLURB HERE ***", f"This series contains {commit_count} patches: {summary}.", 1)
         patches[0].set_content(generated_body)
 
     if commit_count > 1:
