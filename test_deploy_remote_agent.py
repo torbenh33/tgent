@@ -17,6 +17,8 @@ def test_render_unit_uses_configured_remote_paths() -> None:
     rendered = deployment._render_unit(config)
 
     assert "WorkingDirectory=/srv/tgent/app" in rendered
+    assert "Environment=TGIT_AGENT_LLM_CONFIG=%h/.config/tgent/config.toml" in rendered
+    assert "config.ini" not in rendered
     assert (
         'ExecStart="/srv/tgent/app/.venv/bin/python" -m remote_agent_service '
         '--serve --base-dir "/srv/tgent"'
