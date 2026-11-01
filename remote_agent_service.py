@@ -220,8 +220,9 @@ class RemoteAgentService:
             cover = messages[0]
             cover.replace_header("Subject", f"[PATCH 0/{patch_count}] {summary}")
             body = _body(cover)
-            patch_word = "patch" if patch_count == 1 else "patches"
-            body = body.replace("*** BLURB HERE ***", f"This series contains {patch_count} {patch_word}: {summary}.", 1)
+            history_summary = self.controller.store.get_cached_summary(snapshot.root.name)
+            blurb = history_summary or f"This series contains {patch_count} {'patch' if patch_count == 1 else 'patches'}: {summary}."
+            body = body.replace("*** BLURB HERE ***", blurb, 1)
             cover.set_content(body)
             for message in messages:
                 if message.get("Reply-To"):

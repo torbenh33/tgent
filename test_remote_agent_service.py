@@ -167,14 +167,14 @@ def test_remote_acknowledgement_delegates_state_validation_to_controller() -> No
 
 
 @pytest.mark.parametrize(
-    ("patch_count", "subjects", "expected_blurb"),
+    ("patch_count", "subjects", "history_summary", "expected_blurb"),
     [
-        (1, "change one\n", "This series contains 1 patch: change one."),
-        (2, "change one\nchange two\n", "This series contains 2 patches: change one; change two."),
+        (1, "change one\n", None, "This series contains 1 patch: change one."),
+        (2, "change one\nchange two\n", "Agent history: implemented and verified the changes.", "Agent history: implemented and verified the changes."),
     ],
 )
 def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
-    tmp_path: Path, patch_count: int, subjects: str, expected_blurb: str
+    tmp_path: Path, patch_count: int, subjects: str, history_summary: str | None, expected_blurb: str
 ) -> None:
     class Snapshot:
         base_commit = "base-sha"
@@ -185,6 +185,9 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     patches = tmp_path / "patches"
     patches.mkdir()
     service.config = type("Config", (), {"patches_dir": patches})()
+    service.controller = type("Controller", (), {"store": type("Store", (), {
+        "get_cached_summary": lambda _store, _agent_id: history_summary,
+    })()})()
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -216,7 +219,8 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     assert artifact.count(b"Reply-To: agent <agent@localhost>") == patch_count + 1
     from mcp_tgit_review import _parse_mbox
     messages = _parse_mbox(artifact)
-    assert messages[0]["Subject"] == f"[PATCH 0/{patch_count}] {expected_blurb.split(': ', 1)[1].rstrip('.')}"
+    expected_subject = "change one" if patch_count == 1 else "change one; change two"
+    assert messages[0]["Subject"] == f"[PATCH 0/{patch_count}] {expected_subject}"
     assert expected_blurb in messages[0].get_content()
     assert "*** SUBJECT HERE ***" not in messages[0]["Subject"]
     assert "*** BLURB HERE ***" not in messages[0].get_content()
