@@ -360,7 +360,12 @@ def export_patch_series(
         summary = summary or f"{commit_count} patch series"
         patches[0].replace_header("Subject", f"[PATCH 0/{commit_count}] {summary}")
         generated_body = _body(patches[0])
-        generated_body = generated_body.replace("*** BLURB HERE ***", f"This series contains {commit_count} patches: {summary}.", 1)
+        patch_word = "patch" if commit_count == 1 else "patches"
+        generated_body = generated_body.replace(
+            "*** BLURB HERE ***",
+            f"This series contains {commit_count} {patch_word}: {summary}.",
+            1,
+        )
         patches[0].set_content(generated_body)
 
     _include_agent_history_summary(patches[0], agent_history_summary)
