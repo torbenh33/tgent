@@ -245,13 +245,12 @@ def export_patch_series(
 ) -> dict[str, Any]:
     """Export ``base..head`` as an mbox, creating or revising a review series.
 
-    Multi-patch mboxes include a numbered cover letter (patch 0); single-patch
-    mboxes contain only the patch.
-    Git generates patch 0 with the series summary and diffstat. If supplied,
-    ``cover_letter`` uses its first line as the subject and remaining lines as
-    introductory text in place of Git's blurb placeholder; otherwise a stable
-    subject and introductory summary are derived from commit subjects. Single-
-    commit exports intentionally contain no cover letter. This only reads committed Git
+    Mboxes include a numbered cover letter (patch 0), including for a
+    single-commit series. Git generates patch 0 with the series summary and
+    diffstat. If supplied, ``cover_letter`` uses its first line as the subject
+    and remaining lines as introductory text in place of Git's blurb
+    placeholder; otherwise a stable subject and introductory summary are
+    derived from commit subjects. This only reads committed Git
     history and does not alter the worktree. Pass the returned mbox_path to Mutt;
     pass its series_id again for a new revision.
     """
@@ -315,7 +314,7 @@ def export_patch_series(
         repo,
         [
             "format-patch", "--stdout", "--thread=shallow", "--numbered",
-            *( ["--cover-letter"] if commit_count > 1 else [] ),
+            "--cover-letter",
             f"{base_sha}..{head_sha}",
         ],
     )
@@ -341,7 +340,7 @@ def export_patch_series(
         else:
             patch["Reply-To"] = reply_to_address
 
-    if commit_count > 1 and cover_letter:
+    if cover_letter:
         title, separator, body = cover_letter.strip().partition("\n")
         if not title.strip():
             return {"status": "error", "message": "The cover letter must start with a subject line."}
@@ -350,7 +349,7 @@ def export_patch_series(
         introduction = body.strip() if separator else ""
         generated_body = generated_body.replace("*** BLURB HERE ***", introduction, 1)
         patches[0].set_content(generated_body)
-    elif commit_count > 1:
+    else:
         # Derive a deterministic, useful subject from the commit subjects; Git's
         # default cover subject is the literal placeholder "*** SUBJECT HERE ***".
         subjects = _git(repo, ["log", "--no-merges", "--format=%s", "--reverse", f"{base_sha}..{head_sha}"])
@@ -364,15 +363,14 @@ def export_patch_series(
         generated_body = generated_body.replace("*** BLURB HERE ***", f"This series contains {commit_count} patches: {summary}.", 1)
         patches[0].set_content(generated_body)
 
-    if commit_count > 1:
-        _include_agent_history_summary(patches[0], agent_history_summary)
+    _include_agent_history_summary(patches[0], agent_history_summary)
 
     # Serialize the modified messages unconditionally: format-patch's raw mbox
     # does not include headers added to the parsed Message objects above.
     raw = _serialize_mbox(patches)
 
     patch_ids = [_message_id(patch) for patch in patches]
-    expected_messages = commit_count + (1 if commit_count > 1 else 0)
+    expected_messages = commit_count + 1
     if len(patches) != expected_messages or any(patch_id is None for patch_id in patch_ids):
         return {
             "status": "error",
