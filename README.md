@@ -10,6 +10,37 @@
 - Patch series can be exported for review rather than silently integrated.
 - Optional remote deployment and versioned runtime preparation.
 
+## Data flow and trust boundaries
+
+```mermaid
+flowchart LR
+    operator[Operator] -->|configure allowlist, review patches| host[MCP host]
+    subgraph local[Controller host — trusted runtime]
+        host <-->|MCP requests and results| controller[FastMCP controller / AgentController]
+        controller -->|model prompts and tool calls| model[Configured model endpoint]
+        controller -->|create private snapshot| snapshot[Per-agent project snapshot / worktree]
+        subgraph worker_boundary[Worker sandbox — Bubblewrap isolation]
+            worker[Agent worker]
+            enabled[Enabled MCP tools]
+            worker -->|invoke| enabled
+        end
+        controller <-->|start, messages, results| worker
+        discovery[Installed MCP entry points\n(discovered / available)] -->|operator allowlist enables subset| enabled
+        worker -->|reads and edits| snapshot
+        controller -->|export patch series| review[Submitted patch artifacts / review state]
+    end
+    subgraph remote_boundary[Optional remote host — separate trust boundary]
+        remote[Remote-agent service and worker runtime]
+        remotesnap[Remote project snapshot]
+        remote -->|sandboxed work| remotesnap
+    end
+    controller <-->|remote-agent protocol / patch import| remote
+    remote -->|submitted patches| review
+    review -->|operator reviews; applies separately| operator
+```
+
+The model endpoint and installed MCP server code are external/trusted dependencies, respectively; discovery only lists installed entry points, and the allowlist gates which tools are enabled for invocation. Local workers operate on private snapshots rather than editing the launched checkout directly. In remote mode, work runs on the separately deployed host and submitted patches return for operator review; submission does not itself integrate changes into the original project.
+
 ## Requirements and setup
 
 Python 3.11 or newer is required. Local execution requires Bubblewrap and the OS facilities required by the sandbox. Install the package and its declared FastMCP and OpenAI dependencies into a virtual environment:
