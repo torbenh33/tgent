@@ -166,7 +166,16 @@ def test_remote_acknowledgement_delegates_state_validation_to_controller() -> No
         asyncio.run(service._acknowledge_patch_applied({"agent_id": "agent-1"}))
 
 
-def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("patch_count", "subjects", "expected_blurb"),
+    [
+        (1, "change one\n", "This series contains 1 patch: change one."),
+        (2, "change one\nchange two\n", "This series contains 2 patches: change one; change two."),
+    ],
+)
+def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
+    tmp_path: Path, patch_count: int, subjects: str, expected_blurb: str
+) -> None:
     class Snapshot:
         base_commit = "base-sha"
         project_root = tmp_path
@@ -180,8 +189,14 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        raw = b"From abc\nSubject: [PATCH 0/1] cover\n\ncover\n\nFrom def\nSubject: [PATCH 1/1] change\n"
-        return subprocess.CompletedProcess(argv, 0, raw)
+        if "log" in argv:
+            return subprocess.CompletedProcess(argv, 0, subjects)
+        messages = [b"From abc\nSubject: [PATCH 0/1] *** SUBJECT HERE ***\n\n*** BLURB HERE ***\n"]
+        messages.extend(
+            f"From p{index}\nSubject: [PATCH {index}/{patch_count}] change\n".encode()
+            for index in range(1, patch_count + 1)
+        )
+        return subprocess.CompletedProcess(argv, 0, b"\n".join(messages))
 
     import remote_agent_service
     original = remote_agent_service.subprocess.run
@@ -197,6 +212,13 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(tmp_
     # Serializing the parsed mbox rewrites envelope separators to mailbox-generated
     # `From ` lines, so assert the stable mbox framing rather than git's input bytes.
     assert artifact.startswith(b"From ")
-    assert artifact.count(b"\nFrom ") == 1
-    assert artifact.count(b"Reply-To: agent <agent@localhost>") == 2
+    assert artifact.count(b"\nFrom ") == patch_count
+    assert artifact.count(b"Reply-To: agent <agent@localhost>") == patch_count + 1
+    from mcp_tgit_review import _parse_mbox
+    messages = _parse_mbox(artifact)
+    assert messages[0]["Subject"] == f"[PATCH 0/{patch_count}] {expected_blurb.split(': ', 1)[1].rstrip('.')}"
+    assert expected_blurb in messages[0].get_content()
+    assert "*** SUBJECT HERE ***" not in messages[0]["Subject"]
+    assert "*** BLURB HERE ***" not in messages[0].get_content()
+    assert len(messages) == patch_count + 1
     assert "format-patch" in calls[0]

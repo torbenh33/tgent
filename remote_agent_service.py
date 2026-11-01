@@ -199,12 +199,38 @@ class RemoteAgentService:
         patch_bytes = exported.stdout
         if not patch_bytes.strip():
             raise RuntimeError("Patch export produced an empty mbox")
-        from mcp_tgit_review import _apply_reply_to
+        from mcp_tgit_review import _body, _parse_mbox, _serialize_mbox
         reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
+        if not reply_to or "\\n" in reply_to or "\\r" in reply_to:
+            raise RuntimeError("Could not set patch Reply-To headers: Reply-To must be a valid single-line identity")
         try:
-            patch_bytes = _apply_reply_to(patch_bytes, reply_to)
-        except (ValueError, OSError, mailbox.Error) as err:
-            raise RuntimeError(f"Could not set patch Reply-To headers: {err}") from err
+            messages = _parse_mbox(patch_bytes)
+            patch_count = len(messages) - 1
+            if patch_count < 1:
+                raise ValueError("Generated mbox contains no patches")
+            subjects = subprocess.run(
+                ("git", "-C", str(snapshot.project_root), "log", "--no-merges", "--format=%s", "--reverse", f"{snapshot.base_commit}..{params['head_commit']}"),
+                check=True, capture_output=True, text=True, timeout=60,
+            ).stdout
+            commit_subjects = [line.strip() for line in subjects.splitlines() if line.strip()]
+            summary = "; ".join(commit_subjects[:3])
+            if len(commit_subjects) > 3:
+                summary += f"; and {len(commit_subjects) - 3} more"
+            summary = summary or f"{patch_count} patch series"
+            cover = messages[0]
+            cover.replace_header("Subject", f"[PATCH 0/{patch_count}] {summary}")
+            body = _body(cover)
+            patch_word = "patch" if patch_count == 1 else "patches"
+            body = body.replace("*** BLURB HERE ***", f"This series contains {patch_count} {patch_word}: {summary}.", 1)
+            cover.set_content(body)
+            for message in messages:
+                if message.get("Reply-To"):
+                    message.replace_header("Reply-To", reply_to)
+                else:
+                    message["Reply-To"] = reply_to
+            patch_bytes = _serialize_mbox(messages)
+        except (ValueError, OSError, mailbox.Error, subprocess.CalledProcessError) as err:
+            raise RuntimeError(f"Could not customize patch cover letter: {err}") from err
         result = {"status": "ok", "base": snapshot.base_commit, "head": params["head_commit"]}
         if len(patch_bytes) > 16 * 1024 * 1024:
             raise RuntimeError("Patch artifact exceeds 16 MiB limit")
