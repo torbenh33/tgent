@@ -204,7 +204,11 @@ async def get_agent_log(agent_id: str, max_bytes: int = 65536) -> dict[str, Any]
 
 @mcp.tool()
 async def get_agent_history(agent_id: str) -> list[dict[str, Any]]:
-    """Return conversation messages; agent_id may be a unique hexadecimal SHA prefix."""
+    """Return the complete conversation; use only for debugging when specifically instructed.
+
+    For normal usage, call summarize_agent_history instead: complete history can clog context.
+    agent_id may be a unique hexadecimal SHA prefix.
+    """
     remote = _remote_adapter()
     if remote is not None:
         result = await asyncio.to_thread(remote.history, agent_id)
