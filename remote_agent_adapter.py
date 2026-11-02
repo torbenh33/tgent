@@ -42,10 +42,26 @@ class RemoteAgentAdapter:
         request_id: str | None = None,
         upload_id: str | None = None,
     ) -> dict[str, object]:
-        """Upload project state and request a remote snapshot/start."""
+        """Push the project revision and synchronize its working tree remotely."""
         project = Path(project_root).expanduser().resolve(strict=True)
         if not project.is_dir():
             raise RemoteAgentAdapterError(f"Project root is not a directory: {project}")
+        git = ["git", "-C", str(project)]
+        try:
+            base = subprocess.run([*git, "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+            tree = subprocess.run([*git, "ls-tree", "-r", "-z", base], capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError) as err:
+            raise RemoteAgentAdapterError(f"Project must be a Git repository with a commit: {err}") from err
+        if any(item.startswith(b"160000 commit ") for item in tree.split(b"\\0") if item):
+            raise RemoteAgentAdapterError("Remote project synchronization does not support submodules")
+        project_name = "_" + str(project).strip("/").replace("/", "_")
+        remote_repository = str(self.config.project_root_dir / project_name)
+        try:
+            subprocess.run(["ssh", self.config.ssh_host, "mkdir", "-p", remote_repository], check=True)
+            subprocess.run(["ssh", self.config.ssh_host, "git", "init", "--bare", remote_repository], check=False, capture_output=True)
+            subprocess.run([*git, "push", f"{self.config.ssh_host}:{remote_repository}", f"{base}:refs/heads/agent-sync"], check=True)
+        except subprocess.CalledProcessError as err:
+            raise RemoteAgentAdapterError(f"Project Git push failed: {err}") from err
         selected_request_id = request_id or uuid.uuid4().hex
         selected_upload_id = upload_id or uuid.uuid4().hex
         message = validate_request({
@@ -53,7 +69,7 @@ class RemoteAgentAdapter:
             "operation": "start",
             "request_id": selected_request_id,
             "upload_id": selected_upload_id,
-            "request": request,
+            "request": {**request, "_project_name": project_name, "_base_commit": base},
         })
         try:
             prepared = self.client.request(
@@ -70,10 +86,7 @@ class RemoteAgentAdapter:
             raise RemoteAgentAdapterError(f"Could not prepare remote upload: {err}") from err
 
         remote_path = str(self.config.uploads_dir / "incoming" / selected_upload_id)
-        rsync_argv = [self.rsync, "-a"]
-        for pattern in DEFAULT_RSYNC_EXCLUDES:
-            rsync_argv.extend(("--exclude", pattern))
-        rsync_argv.extend(("--", os.fspath(project) + "/", f"{self.config.ssh_host}:{shlex.quote(remote_path)}/"))
+        rsync_argv = [self.rsync, "-a", "--exclude", ".git", "--", os.fspath(project) + "/", f"{self.config.ssh_host}:{shlex.quote(remote_path)}/"]
         try:
             subprocess.run(tuple(rsync_argv), check=True)
         except (OSError, subprocess.CalledProcessError) as err:

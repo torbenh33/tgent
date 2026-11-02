@@ -54,6 +54,10 @@ class RemoteAgentConfig:
         object.__setattr__(self, "remote_base_dir", normalized)
 
     @property
+    def project_root_dir(self) -> PurePosixPath:
+        return self.remote_base_dir / "projects"
+
+    @property
     def runtime_dir(self) -> PurePosixPath:
         return self.remote_base_dir / "runtime"
 

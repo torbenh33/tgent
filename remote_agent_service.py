@@ -96,6 +96,7 @@ class RemoteAgentService:
             config.snapshots_dir,
             config.logs_dir,
             config.uploads_dir,
+            config.project_root_dir,
             config.patches_dir,
         ):
             _managed_directory(Path(str(configured)))
@@ -251,7 +252,20 @@ class RemoteAgentService:
         return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch_bytes), "patch_sha256": __import__("hashlib").sha256(patch_bytes).hexdigest()}
 
     async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
-        return await self.controller.start_agent(request, source_root=checkout)
+        name = request.pop("_project_name", None)
+        base = request.pop("_base_commit", None)
+        if not isinstance(name, str) or not name.startswith("_") or "/" in name or not isinstance(base, str):
+            raise RemoteProtocolError("Invalid project mirror metadata")
+        repository = Path(str(self.config.project_root_dir)) / name
+        if not repository.exists():
+            repository.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "--bare", str(repository)], check=True, capture_output=True)
+        subprocess.run(["git", "--git-dir", str(repository), "fetch", "--no-tags", str(repository), base], check=True, capture_output=True)
+        work = repository.parent / (name + "-work-" + secrets.token_hex(8))
+        subprocess.run(["git", "clone", "--reference", str(repository), str(repository), str(work)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(work), "checkout", "--detach", base], check=True, capture_output=True)
+        subprocess.run(["rsync", "-a", "--exclude", ".git", "--delete", str(checkout) + "/", str(work) + "/"], check=True, capture_output=True)
+        return await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository)
 
     async def _status(self, request):
         return await self.controller.get_status(request["agent_id"])

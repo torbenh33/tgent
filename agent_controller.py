@@ -260,6 +260,8 @@ class AgentController:
         _extra_runtime_mounts: tuple[Any, ...] = (),
         _effective_base_commit: str | None = None,
         _original_base_commit: str | None = None,
+        _mirror_path: str | os.PathLike[str] | None = None,
+        _base_commit: str | None = None,
     ) -> dict[str, Any]:
         """Start an agent from the controller project or a trusted uploaded checkout.
 
@@ -295,8 +297,13 @@ class AgentController:
         created = False
         try:
             snapshot = create_project_snapshot(selected_project_root, destination)
+            mirror = Path(_mirror_path).resolve(strict=True) if _mirror_path is not None else None
             _configure_snapshot_git_identity(selected_project_root, snapshot.project_root)
             original_base_commit = _original_base_commit or snapshot.base_commit
+            if _base_commit is not None:
+                if _COMMIT_RE.fullmatch(_base_commit) is None:
+                    raise AgentControllerError("Invalid mirror base commit")
+                snapshot = ProjectSnapshot(snapshot.root, snapshot.project_root, _base_commit, snapshot.linked_worktree)
             if _effective_base_commit is not None:
                 if _COMMIT_RE.fullmatch(_effective_base_commit) is None:
                     raise AgentControllerError("Continuation sync returned an invalid base commit")
@@ -363,6 +370,7 @@ class AgentController:
                     self.runtime_layout.mounts + tuple(_extra_runtime_mounts),
                     self.runtime_layout.symlinks,
                 ),
+                project_mirror=mirror,
             )
             log_path = self.log_root / f"{agent_id}.log"
             log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

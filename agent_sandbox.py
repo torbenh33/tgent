@@ -259,6 +259,7 @@ def build_sandbox_command(
     runtime_files: tuple[str | os.PathLike[str], ...] = (),
     runtime_dirs: tuple[str | os.PathLike[str], ...] = (),
     runtime_layout: SandboxRuntimeLayout | None = None,
+    project_mirror: str | os.PathLike[str] | None = None,
 ) -> SandboxCommand:
     """Build a restrictive Bubblewrap argv for a worker in a project snapshot.
 
@@ -365,6 +366,16 @@ def build_sandbox_command(
         for _source_b, target_b, _ro_b in mounts[index + 1 :]:
             if _path_is_within(target_a, target_b) or _path_is_within(target_b, target_a):
                 raise SandboxError(f"Overlapping home mount targets: {target_a} and {target_b}")
+    if project_mirror is not None:
+        mirror = Path(project_mirror).expanduser().resolve(strict=True)
+        if not mirror.is_dir():
+            raise SandboxError("Project mirror is not a directory")
+        mirror_target = Path("/run/agent-project-mirror")
+        if any(_path_is_within(mirror_target, target) or _path_is_within(target, mirror_target) for target in runtime_targets):
+            raise SandboxError("Project mirror overlaps a runtime mount")
+        runtime_mounts.append(RuntimeMount(mirror, mirror_target))
+        runtime_targets.append(mirror_target)
+
     for runtime_mount in runtime_mounts:
         for _source, target, _read_only in mounts:
             if _path_is_within(runtime_mount.target, target) or _path_is_within(target, runtime_mount.target):
