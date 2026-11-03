@@ -55,6 +55,16 @@ def test_start_request_seeds_copilotchat_user_message() -> None:
     assert isinstance(history[0]["id"], str)
     assert max_calls == 200
     assert max_runtime == 43200
+    assert AgentController._validate_start_request({"schema_version": 1, "task": "x"})[0]
+
+
+def test_start_request_model_configuration_validation_and_overrides() -> None:
+    assert AgentController._validate_start_request({
+        "schema_version": 1, "task": "x", "model": "custom-model", "reasoning_effort": "high"
+    })[0]
+    for invalid in ({"model": " "}, {"model": 7}, {"reasoning_effort": "extreme"}, {"reasoning_effort": None}):
+        with pytest.raises(AgentControllerError, match="model|reasoning_effort"):
+            AgentController._validate_start_request({"schema_version": 1, "task": "x", **invalid})
 
 
 def test_start_request_preserves_supplied_history_and_fields() -> None:
@@ -320,7 +330,8 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
     class Store:
         def get_metadata(self, _agent_id):
             return {"agent_id": "old", "state": state, "snapshot_root": str(snapshot_root),
-                    "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
+                    "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None,
+                    "model": "parent-model", "reasoning_effort": "low"}
 
         def get_history(self, _agent_id):
             return [{"role": "user", "content": "original"}]
@@ -342,13 +353,15 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
         return {"status": "ok", "agent_id": "new", "state": "running"}
 
     controller.start_agent = start
-    result = await controller.continue_agent("old", [{"role": "user", "content": "more"}])
+    result = await controller.continue_agent("old", [{"role": "user", "content": "more"}], model="override-model", reasoning_effort="high")
     assert result["agent_id"] == "new"
     assert result["parent_agent_id"] == "old"
     assert calls[0][0]["history"] == [
         {"role": "user", "content": "original"}, {"role": "user", "content": "more"}
     ]
     assert calls[0][1] == snapshot_project
+    assert calls[0][0]["model"] == "override-model"
+    assert calls[0][0]["reasoning_effort"] == "high"
     assert calls[0][2] == {}
 
 
@@ -382,8 +395,8 @@ async def test_continue_with_sync_bundle_mounts_fixed_read_only_source(tmp_path)
 
     controller.start_agent = start
     await controller.continue_agent(
-        "old", [{"role": "user", "content": "continue"}],
-        sync_callback=lambda _project: "a" * 40, sync_bundle_path=bundle,
+        "old", [{"role": "user", "content": "continue"}], model="replacement",
+        reasoning_effort="medium", sync_callback=lambda _project: "a" * 40, sync_bundle_path=bundle,
     )
     assert calls[0]["_effective_base_commit"] == "a" * 40
     assert calls[0]["_original_base_commit"] == "b" * 40

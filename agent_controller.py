@@ -527,8 +527,10 @@ class AgentController:
                 },
             )
         params = dict(params)
-        params["model"] = metadata.get("model")
-        params["reasoning_effort"] = metadata.get("reasoning_effort", "none")
+        if metadata.get("model") is not None:
+            params["model"] = metadata["model"]
+        if "reasoning_effort" in metadata:
+            params["reasoning_effort"] = metadata["reasoning_effort"]
         result = self.model_callback(params)
         if inspect.isawaitable(result):
             result = await result
