@@ -209,7 +209,7 @@ class AgentController:
     def _validate_start_request(request: Any) -> tuple[list[dict[str, Any]], int, int]:
         if not isinstance(request, dict):
             raise AgentControllerError("start request must be an object")
-        allowed = {"schema_version", "task", "history", "limits", "name"}
+        allowed = {"schema_version", "task", "history", "limits", "name", "model", "reasoning_effort"}
         unknown = set(request) - allowed
         if unknown:
             raise AgentControllerError(f"Unknown start request field(s): {', '.join(sorted(unknown))}")
@@ -244,6 +244,12 @@ class AgentController:
         runtime = limits.get("max_runtime_seconds", 43200)
         if type(calls) is not int or calls < 1 or type(runtime) is not int or runtime < 1:
             raise AgentControllerError("requested limits must be positive integers")
+        model = request.get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip() or len(model) > 200):
+            raise AgentControllerError("model must be a non-empty string of at most 200 characters")
+        effort = request.get("reasoning_effort", "none")
+        if not isinstance(effort, str) or effort not in {"none", "low", "medium", "high"}:
+            raise AgentControllerError("reasoning_effort must be one of: none, low, medium, high")
         return history, calls, runtime
 
     async def start_agent(
@@ -262,6 +268,9 @@ class AgentController:
         externally supplied worker path.
         """
         history, requested_calls, requested_runtime = self._validate_start_request(request)
+        callback_owner = getattr(self.model_callback, "__self__", None)
+        model = request.get("model", getattr(callback_owner, "model", None))
+        reasoning_effort = request.get("reasoning_effort", getattr(callback_owner, "reasoning_effort", "none"))
         if source_root is None:
             if self.project_root is None:
                 raise AgentControllerError("A project source is required for this controller")
@@ -319,6 +328,8 @@ class AgentController:
                 "socket_path": str(socket_path),
                 "worker_log": str(self.log_root / f"{agent_id}.log"),
                 "parent_agent_id": None,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
             }
             self.store.create(agent_id, metadata, history)
             created = True
@@ -515,6 +526,9 @@ class AgentController:
                     "last_model_request_bytes": request_bytes,
                 },
             )
+        params = dict(params)
+        params["model"] = metadata.get("model")
+        params["reasoning_effort"] = metadata.get("reasoning_effort", "none")
         result = self.model_callback(params)
         if inspect.isawaitable(result):
             result = await result
@@ -806,9 +820,13 @@ class AgentController:
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
         return self.store.get_history(self.resolve_agent_id(agent_id))
 
-    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, sync_callback: Callable[[Path], str] | None = None, sync_bundle_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, model: str | None = None, reasoning_effort: str | None = None, sync_callback: Callable[[Path], str] | None = None, sync_bundle_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         agent_id = self.resolve_agent_id(agent_id)
         validate = self.store.get_metadata(agent_id)
+        if model is not None and (not isinstance(model, str) or not model.strip() or len(model) > 200):
+            raise AgentControllerError("model must be a non-empty string of at most 200 characters")
+        if reasoning_effort is not None and (not isinstance(reasoning_effort, str) or reasoning_effort not in {"none", "low", "medium", "high"}):
+            raise AgentControllerError("reasoning_effort must be one of: none, low, medium, high")
         if validate.get("state") not in {"halted", "stopped", "awaiting_review", "review_received"}:
             raise AgentControllerError(f"Agent cannot continue from state {validate.get('state')}")
         if not messages or any(not isinstance(message, dict) for message in messages):
@@ -859,13 +877,20 @@ class AgentController:
                 if extra_mounts:
                     start_options["_extra_runtime_mounts"] = extra_mounts
                 restarted = await self.start_agent(
-                    {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent")},
+                    {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent"),
+                     "model": model if model is not None else validate.get("model"),
+                     "reasoning_effort": reasoning_effort if reasoning_effort is not None else validate.get("reasoning_effort", "none")},
                     **start_options,
                 )
             finally:
                 restarting.discard(agent_id)
             self.store.update_metadata(restarted["agent_id"], {"parent_agent_id": agent_id})
             return {**restarted, "parent_agent_id": agent_id, "queued_messages": len(messages)}
+        if model is not None or reasoning_effort is not None:
+            self.store.update_metadata(agent_id, {
+                **({"model": model} if model is not None else {}),
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
+            })
         self.store.append_history(agent_id, messages)
         command = {"command": "review_feedback", "messages": messages}
         await runtime.commands.put(command)

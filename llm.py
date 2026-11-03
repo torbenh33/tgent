@@ -20,6 +20,7 @@ class LLMClient:
         self.base_url = settings.get('base_url')
         self.api_key = settings.get('api_key')
         self.model = settings.get('model')
+        self.reasoning_effort = settings.get('reasoning_effort', 'none')
         self.api = settings.get('api', 'chat.completions')
         if isinstance(self.api, str):
             self.api = self.api.strip().casefold()
@@ -57,18 +58,31 @@ class LLMClient:
 
     @staticmethod
     def _validate_model_params(params: dict[str, Any]) -> None:
-        allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop"}
+        allowed = {"messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "stop", "model", "reasoning_effort"}
         unknown = set(params) - allowed
         if unknown:
             raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
+
+    @staticmethod
+    def _supports_reasoning_effort(model: str) -> bool:
+        # OpenAI reasoning-series models accept reasoning effort. Other
+        # OpenAI-compatible providers/models are not assumed to implement it.
+        return model.casefold().startswith(("o1", "o3", "o4", "gpt-5"))
 
     async def chat_completions_callback(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a response with the Chat Completions API."""
         self._validate_model_params(params)
         request = dict(self.chat_completions_options)
         request.update(params)
-        request["model"] = self.model
-        request.setdefault("reasoning_effort", "none")
+        model = params.get("model", self.model)
+        effort = params.get("reasoning_effort", self.reasoning_effort)
+        request["model"] = model
+        if effort != "none":
+            if not self._supports_reasoning_effort(model):
+                raise ValueError(f"Model {model!r} does not support reasoning_effort")
+            request["reasoning_effort"] = effort
+        else:
+            request.pop("reasoning_effort", None)
         response = await asyncio.to_thread(self.client.chat.completions.create, **request)
         if not hasattr(response, "model_dump"):
             raise RuntimeError("OpenAI-compatible client returned an unsupported completion object")
@@ -81,13 +95,20 @@ class LLMClient:
             raise ValueError("The Responses API does not support the stop parameter")
 
         request: dict[str, Any] = dict(self.responses_options)
-        request.update({"model": self.model, "input": self._response_input(params.get("messages", []))})
+        model = params.get("model", self.model)
+        effort = params.get("reasoning_effort", self.reasoning_effort)
+        request.update({"model": model, "input": self._response_input(params.get("messages", []))})
         for key in ("temperature", "top_p"):
             if key in params:
                 request[key] = params[key]
         if "max_tokens" in params:
             request["max_output_tokens"] = params["max_tokens"]
-        request.setdefault("reasoning", {"effort": "low"})
+        if effort != "none":
+            if not self._supports_reasoning_effort(model):
+                raise ValueError(f"Model {model!r} does not support reasoning_effort")
+            request["reasoning"] = {"effort": effort}
+        else:
+            request.pop("reasoning", None)
         if "tools" in params:
             request["tools"] = [self._response_tool(tool) for tool in params["tools"]]
         if "tool_choice" in params:
