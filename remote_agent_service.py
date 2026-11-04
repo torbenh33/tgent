@@ -12,6 +12,8 @@ import logging
 import mailbox
 import os
 import secrets
+import re
+import warnings
 import socket
 import stat
 import subprocess
@@ -123,8 +125,7 @@ class RemoteAgentService:
                 "status": self._status,
                 "history": self._history,
                 "continue": self._continue,
-                "prepare_sync": self._prepare_sync,
-                "finalize_sync": self._finalize_sync,
+                "ensure_project": self._ensure_project,
                 "stop": self._stop,
                 "stop_agents": self._stop_agents,
                 "restart_agents": self._restart_agents,
@@ -251,21 +252,42 @@ class RemoteAgentService:
             raise
         return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch_bytes), "patch_sha256": __import__("hashlib").sha256(patch_bytes).hexdigest()}
 
-    async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
-        name = request.pop("_project_name", None)
-        base = request.pop("_base_commit", None)
-        if not isinstance(name, str) or not name.startswith("_") or "/" in name or not isinstance(base, str):
-            raise RemoteProtocolError("Invalid project mirror metadata")
+    def _repository(self, name):
+        if not isinstance(name, str) or not name.startswith("_") or name in {"_", "_.."} or "/" in name or "\x00" in name:
+            raise RemoteProtocolError("Invalid project mirror name")
         repository = Path(str(self.config.project_root_dir)) / name
-        if not repository.exists():
-            repository.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            subprocess.run(["git", "init", "--bare", str(repository)], check=True, capture_output=True)
-        subprocess.run(["git", "--git-dir", str(repository), "fetch", "--no-tags", str(repository), base], check=True, capture_output=True)
+        if repository.is_symlink():
+            raise RemoteProtocolError("Project mirror must not be a symlink")
+        return repository
+
+    async def _ensure_project(self, request):
+        name, source = request["project_name"], request["source_path"]
+        repository = self._repository(name)
+        if not isinstance(source, str) or not source.startswith("/") or source.replace("/", "_") != name:
+            raise RemoteProtocolError("Invalid project source path")
+        subprocess.run(["git", "init", "--bare", str(repository)], check=True, capture_output=True)
+        marker = repository / "agent-source-path"
+        collision = False
+        try:
+            with marker.open("x", encoding="utf-8") as stream:
+                stream.write(source)
+        except FileExistsError:
+            if marker.read_text(encoding="utf-8") != source:
+                collision = True
+                warnings.warn(f"Project mirror name collision: {name}", RuntimeWarning)
+        return {"status": "ready", "collision": collision}
+
+    async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
+        request = dict(request)
+        name, base = request.pop("_project_name", None), request.pop("_base_commit", None)
+        repository = self._repository(name)
+        if not isinstance(base, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base) is None:
+            raise RemoteProtocolError("Invalid project mirror base commit")
         work = repository.parent / (name + "-work-" + secrets.token_hex(8))
-        subprocess.run(["git", "clone", "--reference", str(repository), str(repository), str(work)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "--no-local", "--reference", str(repository), str(repository), str(work)], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(work), "checkout", "--detach", base], check=True, capture_output=True)
-        subprocess.run(["rsync", "-a", "--exclude", ".git", "--delete", str(checkout) + "/", str(work) + "/"], check=True, capture_output=True)
-        return await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository)
+        subprocess.run(["rsync", "-a", "--checksum", "--exclude", ".git", "--delete", str(checkout) + "/", str(work) + "/"], check=True, capture_output=True)
+        return await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository, _project_name=name)
 
     async def _status(self, request):
         return await self.controller.get_status(request["agent_id"])
@@ -299,54 +321,12 @@ class RemoteAgentService:
     async def _continue(self, request):
         agent_id = request["agent_id"]
         messages = [dict(message) for message in request["messages"]]
-        metadata = self.controller.store.get_metadata(agent_id)
-        has_pending_sync = (
-            metadata.get("pending_sync_base") is not None
-            or metadata.get("sync_bundle_path") is not None
-        )
-        sync_callback = (
-            (lambda project: self._sync_prepared_bundle(agent_id, project))
-            if has_pending_sync
-            else None
-        )
-        bundle_path = metadata.get("sync_bundle_path") if has_pending_sync else None
-        result = await self.controller.continue_agent(
-            agent_id, messages, sync_callback=sync_callback, sync_bundle_path=bundle_path
-        )
-        if has_pending_sync:
-            # The child mount references the staged file independently; retain the
-            # file for the worker lifetime, but consume the parent's pending state.
-            self.controller.store.update_metadata(agent_id, {"pending_sync_base": None, "sync_bundle_path": None})
-        return result
-
-    def _sync_prepared_bundle(self, agent_id, project):
-        metadata = self.controller.store.get_metadata(agent_id)
-        base = metadata.get("pending_sync_base")
-        bundle_path = metadata.get("sync_bundle_path")
-        if not isinstance(base, str) or not isinstance(bundle_path, str) or not Path(bundle_path).is_file():
-            raise RuntimeError("Continuation bundle has not been finalized or staged")
-        return base
-
-    async def _prepare_sync(self, request):
-        return self.uploads.prepare_sync(request["agent_id"], request["sync_id"])
-
-    async def _finalize_sync(self, request):
-        metadata = self.controller.store.get_metadata(request["agent_id"])
-        if metadata.get("state") not in {"halted", "stopped"} or metadata.get("submitted_head"):
-            raise RuntimeError("Only inactive agents without submitted patches can be synchronized")
-        repository_path = metadata.get("snapshot_project")
-        if not isinstance(repository_path, str):
-            raise RuntimeError("Continuation agent snapshot has no Git repository path")
-        result = self.uploads.finalize_sync(
-            request["agent_id"],
-            request["sync_id"],
-            request["size"],
-            request["sha256"],
-            request["base_commit"],
-            repository_path,
-        )
-        self.controller.store.update_metadata(request["agent_id"], {"pending_sync_base": result["sync_base"], "sync_bundle_path": result["bundle_path"]})
-        return result
+        upload_id = request.get("upload_id")
+        if upload_id is None:
+            return await self.controller.continue_agent(agent_id, messages)
+        async def continue_with_upload(checkout, _request):
+            return await self.controller.continue_agent(agent_id, messages, sync_checkout=checkout)
+        return await self.uploads.start_async_handler(continue_with_upload)({"upload_id": upload_id, "request": {}})
 
     async def _stop(self, request):
         return await self.controller.stop_agent(request["agent_id"])

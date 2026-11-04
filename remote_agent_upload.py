@@ -5,9 +5,6 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import inspect
-import hashlib
-import re
-import subprocess
 import os
 import shutil
 import stat
@@ -49,8 +46,6 @@ class RemoteUploadManager:
         self.incoming = self.root / "incoming"
         self.incoming.mkdir(mode=0o700, exist_ok=True)
         self.completed = self.root / "completed"
-        self.sync_root = self.root / "sync"
-        self.sync_root.mkdir(mode=0o700, exist_ok=True)
         self.completed.mkdir(mode=0o700, exist_ok=True)
         if self.incoming.is_symlink() or not self.incoming.is_dir():
             raise RemoteUploadError(f"Incoming upload path is not a real directory: {self.incoming}")
@@ -61,53 +56,6 @@ class RemoteUploadManager:
         self.lock_path = self.root / ".publication.lock"
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         os.close(descriptor)
-
-    def prepare_sync(self, agent_id: str, sync_id: str) -> dict[str, str]:
-        _validate_upload_id(agent_id)
-        _validate_upload_id(sync_id)
-        directory = self.sync_root / sync_id
-        directory.mkdir(mode=0o700)
-        (directory / "agent-id").write_text(agent_id, encoding="ascii")
-        return {"sync_id": sync_id, "status": "ready"}
-
-    def finalize_sync(
-        self,
-        agent_id: str,
-        sync_id: str,
-        size: int,
-        digest: str,
-        base_commit: str,
-        repository_path: str | os.PathLike[str],
-    ) -> dict[str, str]:
-        _validate_upload_id(agent_id)
-        _validate_upload_id(sync_id)
-        directory = self.sync_root / sync_id
-        bundle = directory / "repository.bundle"
-        try:
-            if directory.is_symlink() or directory.resolve(strict=True).parent != self.sync_root or (directory / "agent-id").read_text(encoding="ascii") != agent_id:
-                raise RemoteUploadError("Invalid continuation sync directory")
-            info = bundle.lstat()
-            if not bundle.is_file() or bundle.is_symlink() or info.st_size != size or hashlib.sha256(bundle.read_bytes()).hexdigest() != digest:
-                raise RemoteUploadError("Continuation bundle size or digest mismatch")
-            repository = Path(repository_path).resolve(strict=True)
-            if not repository.is_dir():
-                raise RemoteUploadError("Continuation verification path is not a Git repository directory")
-            verify = subprocess.run(
-                ["git", "-C", str(repository), "bundle", "verify", str(bundle)],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60,
-            )
-            refs = subprocess.run(["git", "bundle", "list-heads", str(bundle)], capture_output=True, text=True, check=True, timeout=30)
-            if not any(line.split()[0] == base_commit for line in refs.stdout.splitlines() if line.split()):
-                raise RemoteUploadError("Bundle does not contain the declared base commit")
-            # Keep the verified bundle available for the continuation callback;
-            # the agent fetches it after the controller starts the child worker.
-            return {"status": "staged", "sync_base": base_commit, "bundle_path": str(bundle)}
-        except BaseException:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise
 
     def incoming_path(self, upload_id: str) -> Path:
         """Return the isolated rsync destination for a validated upload ID."""
@@ -142,8 +90,6 @@ class RemoteUploadManager:
             resolved = source.resolve(strict=True)
             if resolved.parent != self.completed:
                 raise RemoteUploadError("Upload directory resolves outside managed storage")
-            if not any(source.iterdir()):
-                raise RemoteUploadError("Upload directory is empty")
             result = create_snapshot(resolved)
             shutil.rmtree(resolved)
             return result
@@ -174,8 +120,8 @@ class RemoteUploadManager:
                     info = source.lstat()
                 except FileNotFoundError as err:
                     raise RemoteUploadError("Upload directory does not exist") from err
-                if not stat.S_ISDIR(info.st_mode) or not any(source.iterdir()):
-                    raise RemoteUploadError("Upload must be a non-empty real directory")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise RemoteUploadError("Upload must be a real directory")
                 sealed = self.completed / upload_id
                 try:
                     os.rename(source, sealed)
@@ -226,8 +172,6 @@ class RemoteUploadManager:
                 resolved = source.resolve(strict=True)
                 if not stat.S_ISDIR(info.st_mode) or resolved.parent != self.completed:
                     raise RemoteUploadError("Upload path must be a real directory")
-                if not any(source.iterdir()):
-                    raise RemoteUploadError("Upload directory is empty")
                 result = start_agent(resolved, start_request)
                 if inspect.isawaitable(result):
                     result = await result

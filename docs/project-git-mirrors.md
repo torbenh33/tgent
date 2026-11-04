@@ -1,6 +1,6 @@
-# Remote project synchronization proposal
+# Remote project synchronization
 
-**Status:** proposal; not implemented behavior.
+**Status:** implemented for remote agents.
 
 ## Goal and scope
 

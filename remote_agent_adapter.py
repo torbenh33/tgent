@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shlex
 import subprocess
 import tempfile
 import uuid
+import warnings
 from pathlib import Path
 
 from remote_agent_config import RemoteAgentConfig
@@ -18,96 +18,58 @@ class RemoteAgentAdapterError(RuntimeError):
     """Raised when project upload or remote agent startup fails."""
 
 
-DEFAULT_RSYNC_EXCLUDES = (
-    ".venv/", "venv/", "__pycache__/", ".pytest_cache/", ".mypy_cache/",
-    ".ruff_cache/", ".tox/", "node_modules/", ".cache/", ".ssh/", ".aws/",
-    ".azure/", ".config/gcloud/", ".env", ".env.*", "*.pem", "*.key",
-    "id_rsa", "id_ed25519", "credentials", "secrets/",
-)
+def _project_name(project: Path) -> str:
+    return str(project).replace(os.sep, "_")
 
 
 class RemoteAgentAdapter:
-    """Upload a checkout to a unique path and issue a fixed start request."""
+    """Synchronize Git objects and working-tree files for remote agents."""
 
     def __init__(self, config: RemoteAgentConfig, *, client=None, rsync: str = "rsync") -> None:
         self.config = config
         self.client = client or RemoteAgentClient(config)
         self.rsync = rsync
 
-    def start(
-        self,
-        project_root: str | os.PathLike[str],
-        request: dict[str, object],
-        *,
-        request_id: str | None = None,
-        upload_id: str | None = None,
-    ) -> dict[str, object]:
-        """Push the project revision and synchronize its working tree remotely."""
+    def _sync_project(self, project_root, *, base=None, expected_name=None, upload_id=None):
         project = Path(project_root).expanduser().resolve(strict=True)
-        if not project.is_dir():
-            raise RemoteAgentAdapterError(f"Project root is not a directory: {project}")
         git = ["git", "-C", str(project)]
         try:
-            base = subprocess.run([*git, "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+            if base is None:
+                base = subprocess.run([*git, "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+            if not isinstance(base, str) or len(base) not in (40, 64) or any(c not in "0123456789abcdef" for c in base):
+                raise RemoteAgentAdapterError("Invalid recorded base commit")
             tree = subprocess.run([*git, "ls-tree", "-r", "-z", base], capture_output=True, check=True).stdout
+            index = subprocess.run([*git, "ls-files", "--stage", "-z"], capture_output=True, check=True).stdout
+            if any(entry.startswith(b"160000 ") for data in (tree, index) for entry in data.split(b"\0") if entry):
+                raise RemoteAgentAdapterError("Remote project synchronization does not support submodules")
+            name = _project_name(project)
+            if expected_name is not None and name != expected_name:
+                raise RemoteAgentAdapterError("Continuation project does not match the agent project")
+            ensured = self._request("ensure_project", project_name=name, source_path=str(project))
+            if ensured.get("collision"):
+                warnings.warn(f"Project mirror name collision: {name}", RuntimeWarning)
+            remote = str(self.config.project_root_dir / name)
+            subprocess.run([*git, "push", f"{self.config.ssh_host}:{shlex.quote(remote)}", f"{base}:refs/agent-sync/{base}"], check=True, capture_output=True)
+            selected_upload = upload_id or uuid.uuid4().hex
+            self._request("prepare_upload", upload_id=selected_upload)
+            remote_path = str(self.config.uploads_dir / "incoming" / selected_upload)
+            subprocess.run([self.rsync, "-a", "--checksum", "--delete", "--exclude", ".git", "--", str(project) + "/", f"{self.config.ssh_host}:{shlex.quote(remote_path)}/"], check=True)
+            self._request("finalize_upload", upload_id=selected_upload)
+            return name, base, selected_upload
         except (OSError, subprocess.CalledProcessError) as err:
-            raise RemoteAgentAdapterError(f"Project must be a Git repository with a commit: {err}") from err
-        if any(item.startswith(b"160000 commit ") for item in tree.split(b"\\0") if item):
-            raise RemoteAgentAdapterError("Remote project synchronization does not support submodules")
-        project_name = "_" + str(project).strip("/").replace("/", "_")
-        remote_repository = str(self.config.project_root_dir / project_name)
-        try:
-            subprocess.run(["ssh", self.config.ssh_host, "mkdir", "-p", remote_repository], check=True)
-            subprocess.run(["ssh", self.config.ssh_host, "git", "init", "--bare", remote_repository], check=False, capture_output=True)
-            subprocess.run([*git, "push", f"{self.config.ssh_host}:{remote_repository}", f"{base}:refs/heads/agent-sync"], check=True)
-        except subprocess.CalledProcessError as err:
-            raise RemoteAgentAdapterError(f"Project Git push failed: {err}") from err
-        selected_request_id = request_id or uuid.uuid4().hex
-        selected_upload_id = upload_id or uuid.uuid4().hex
-        message = validate_request({
-            "schema_version": 1,
-            "operation": "start",
-            "request_id": selected_request_id,
-            "upload_id": selected_upload_id,
-            "request": {**request, "_project_name": project_name, "_base_commit": base},
-        })
-        try:
-            prepared = self.client.request(
-                {
-                    "schema_version": 1,
-                    "operation": "prepare_upload",
-                    "request_id": uuid.uuid4().hex,
-                    "upload_id": selected_upload_id,
-                }
-            )
-            if not prepared["ok"]:
-                raise RemoteAgentAdapterError("Remote service rejected upload preparation")
-        except RemoteProtocolError as err:
-            raise RemoteAgentAdapterError(f"Could not prepare remote upload: {err}") from err
+            raise RemoteAgentAdapterError(f"Project synchronization failed: {err}") from err
 
-        remote_path = str(self.config.uploads_dir / "incoming" / selected_upload_id)
-        rsync_argv = [self.rsync, "-a", "--exclude", ".git", "--", os.fspath(project) + "/", f"{self.config.ssh_host}:{shlex.quote(remote_path)}/"]
+    def start(self, project_root, request, *, request_id=None, upload_id=None):
+        name, base, selected_upload = self._sync_project(project_root, upload_id=upload_id)
+        message = validate_request({"schema_version": 1, "operation": "start", "request_id": request_id or uuid.uuid4().hex,
+                                    "upload_id": selected_upload, "request": {**request, "_project_name": name, "_base_commit": base}})
         try:
-            subprocess.run(tuple(rsync_argv), check=True)
-        except (OSError, subprocess.CalledProcessError) as err:
-            raise RemoteAgentAdapterError(f"Project upload failed: {err}") from err
-        try:
-            finalized = self.client.request(
-                {
-                    "schema_version": 1,
-                    "operation": "finalize_upload",
-                    "request_id": uuid.uuid4().hex,
-                    "upload_id": selected_upload_id,
-                }
-            )
-            if not finalized["ok"]:
-                raise RemoteAgentAdapterError("Remote service rejected completed upload")
             result = self.client.request(message)
-            if not result["ok"]:
-                raise RemoteAgentAdapterError("Remote service rejected agent start")
-            return result
         except RemoteProtocolError as err:
             raise RemoteAgentAdapterError(f"Remote start request failed: {err}") from err
+        if not result["ok"]:
+            raise RemoteAgentAdapterError("Remote service rejected agent start")
+        return result
 
     def list_agents(self) -> list[dict[str, object]]:
         """List all agents registered by the remote controller."""
@@ -133,62 +95,17 @@ class RemoteAgentAdapter:
         return self._request("review_replies", repo_path=repo_path, unacknowledged_only=unacknowledged_only)
 
     def continue_agent(self, agent_id: str, messages: list[dict[str, object]], project_root: str | os.PathLike[str] | None = None) -> dict[str, object]:
-        """Synchronize current controller HEAD then continue an inactive remote agent."""
+        """Continue using the recorded base, optionally transferring current files."""
         if project_root is None:
             return self._request("continue", agent_id=agent_id, messages=messages)
-        project = Path(project_root).expanduser().resolve(strict=True)
-        base = subprocess.run(["git", "-C", str(project), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
-        # A superproject bundle contains only its own object database. Gitlink
-        # entries name commits in independent submodule repositories, which are
-        # not included by `git bundle create`; reject before making any remote
-        # requests rather than staging an apparently complete but unusable sync.
-        tree = subprocess.run(
-            ["git", "-C", str(project), "ls-tree", "-r", "-z", base],
-            capture_output=True, check=True,
-        ).stdout
-        if any(entry.startswith(b"160000 commit ") for entry in tree.split(b"\0") if entry):
-            raise RemoteAgentAdapterError(
-                "Continuation sync does not support submodules: the superproject bundle omits submodule repository history"
-            )
-        # The agent snapshot already contains its recorded base. If the
-        # controller has not advanced, there is nothing to synchronize; avoid
-        # creating an empty bundle and continue directly.
         status = self._request("status", agent_id=agent_id)
-        agent_base = status.get("base_commit")
-        if isinstance(agent_base, str) and agent_base.lower() == base.lower():
+        if status.get("state") in {"awaiting_review", "review_received"}:
             return self._request("continue", agent_id=agent_id, messages=messages)
-        sync_id = uuid.uuid4().hex
-        descriptor, bundle_name = tempfile.mkstemp(prefix="tgit-sync-", suffix=".bundle")
-        os.close(descriptor)
-        bundle = Path(bundle_name)
-        # `git bundle create` requires a path that does not already exist.
-        bundle.unlink()
-        try:
-            subprocess.run(
-                # Include the base commit as a ref as well as HEAD. A range-only
-                # bundle records the base as a prerequisite, but the remote
-                # service verifies the uploaded bundle outside the agent's Git
-                # repository and therefore cannot resolve that prerequisite.
-                ["git", "-C", str(project), "bundle", "create", str(bundle), agent_base, "HEAD"],
-                check=True,
-                capture_output=True,
-            )
-            size = bundle.stat().st_size
-            digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
-            ready = self._request("prepare_sync", sync_id=sync_id, agent_id=agent_id)
-            if ready.get("status") != "ready":
-                raise RemoteAgentAdapterError("Remote service rejected continuation sync preparation")
-            remote_path = str(self.config.uploads_dir / "sync" / sync_id / "repository.bundle")
-            subprocess.run((self.rsync, "-a", "--", str(bundle), f"{self.config.ssh_host}:{remote_path}"), check=True)
-            finalized = self._request("finalize_sync", sync_id=sync_id, agent_id=agent_id, size=size, sha256=digest, base_commit=base)
-            if finalized.get("sync_base") != base or finalized.get("status") != "staged":
-                raise RemoteAgentAdapterError("Remote continuation sync base mismatch or bundle was not staged")
-            instructions = {"role": "user", "content": f"A Git bundle containing controller commit {base} is staged at {finalized.get('bundle_path')}. Do not assume this sandbox's Git repository has been modified. Fetch this bundle into your repository (for example, `git fetch {finalized.get('bundle_path')} {base}`), then rebase your existing patch/commit queue onto {base} or FETCH_HEAD. Preserve every agent and operator commit, resolve conflicts without discarding either side, and submit subsequent patches against this new base."}
-            return self._request("continue", agent_id=agent_id, messages=[*messages, instructions])
-        except (OSError, subprocess.CalledProcessError, RemoteProtocolError) as err:
-            raise RemoteAgentAdapterError(f"Continuation sync failed: {err}") from err
-        finally:
-            bundle.unlink(missing_ok=True)
+        base, name = status.get("base_commit"), status.get("project_name")
+        if not isinstance(base, str) or not isinstance(name, str):
+            raise RemoteAgentAdapterError("Agent has no recorded mirror or base commit")
+        _, _, upload = self._sync_project(project_root, base=base, expected_name=name)
+        return self._request("continue", agent_id=agent_id, messages=messages, upload_id=upload)
 
     def get_agent_tools(self, agent_id: str) -> dict[str, object]:
         """Retrieve discovered remote project MCP tools and enabled status."""

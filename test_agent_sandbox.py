@@ -306,3 +306,16 @@ def test_controller_socket_is_added_as_a_mount(tmp_path: Path) -> None:
     assert "--bind" in result.argv
     assert str(socket_path) in result.argv
     assert "/run/agent-controller.sock" in result.argv
+
+
+def test_project_mirror_is_bound_read_only_at_alternates_path(tmp_path: Path) -> None:
+    project = tmp_path / "home" / "user" / "project"
+    project.mkdir(parents=True)
+    snapshot = _snapshot(project, tmp_path / "snapshot" / "project")
+    mirror = tmp_path / "mirrors" / "project.git"
+    mirror.mkdir(parents=True)
+    result = build_sandbox_command(snapshot=snapshot, project_config=ProjectConfig(root=project),
+                                   bwrap=_fake_bwrap(tmp_path), home=project.parents[1],
+                                   command=("/bin/true",), project_mirror=mirror)
+    index = result.argv.index(str(mirror))
+    assert result.argv[index - 1:index + 2] == ("--ro-bind", str(mirror), str(mirror))

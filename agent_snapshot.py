@@ -83,11 +83,13 @@ def _copy_tree(source: Path, destination: Path) -> None:
         detail = proc.stderr.strip() or "cp failed"
         raise SnapshotError(f"Could not create reflink snapshot of {source}: {detail}")
 
-def _validate_self_contained_source(project_root: Path, git_dir: Path, common_dir: Path) -> None:
-    """Reject repository features that could retain references outside the copy."""
+def _validate_self_contained_source(project_root: Path, git_dir: Path, common_dir: Path, trusted_mirror: Path | None = None) -> None:
+    """Reject external alternates except the explicitly trusted project mirror."""
     alternates = {git_dir / "objects" / "info" / "alternates", common_dir / "objects" / "info" / "alternates"}
-    if any(path.exists() for path in alternates):
-        raise SnapshotError("Git object alternates are unsupported; refusing a non-self-contained snapshot")
+    for path in alternates:
+        if path.exists():
+            if trusted_mirror is None or path.is_symlink() or path.read_text().splitlines() != [str(trusted_mirror / "objects")]:
+                raise SnapshotError("Git object alternates are unsupported; refusing a non-self-contained snapshot")
 
     try:
         proc = subprocess.run(
@@ -123,15 +125,18 @@ def _worktree_admin_dir(project_root: Path, git_dir: Path, common_dir: Path) -> 
 def create_project_snapshot(
     source_root: str | os.PathLike[str],
     snapshot_root: str | os.PathLike[str],
+    *, trusted_mirror: Path | None = None,
 ) -> ProjectSnapshot:
-    """Create an independent snapshot beneath a new destination root.
+    """Create a snapshot beneath a new destination root.
 
     ``snapshot_root`` must not already exist. The checkout is placed at its
     ``project`` child, with copied linked-worktree common metadata at
     ``git-common`` when needed. Callers can bind ``project_root`` at the
     source checkout's original absolute path inside Bubblewrap.
 
-    The source must be a Git repository root. Copy failure, unsupported Git
+    A trusted mirror, when supplied, remains an external object dependency.
+    Otherwise the snapshot is independent. The source must be a Git repository
+    root. Copy failure, unsupported Git
     layouts, or verification failure remove the partial destination and raise
     ``SnapshotError``.
     """
@@ -157,7 +162,7 @@ def create_project_snapshot(
     if not linked and git_dir != (source / ".git").resolve():
         raise SnapshotError("Unsupported nonstandard Git directory; refusing a potentially shared metadata copy")
     admin_relative = _worktree_admin_dir(source, git_dir, common_dir) if linked else None
-    _validate_self_contained_source(source, git_dir, common_dir)
+    _validate_self_contained_source(source, git_dir, common_dir, trusted_mirror)
     commit = _base_commit(source)
 
     try:

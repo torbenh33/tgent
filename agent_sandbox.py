@@ -370,7 +370,9 @@ def build_sandbox_command(
         mirror = Path(project_mirror).expanduser().resolve(strict=True)
         if not mirror.is_dir():
             raise SandboxError("Project mirror is not a directory")
-        mirror_target = Path("/run/agent-project-mirror")
+        mirror_target = mirror
+        if _path_is_within(mirror_target, project_target) or _path_is_within(project_target, mirror_target):
+            raise SandboxError("Project mirror overlaps project mount")
         if any(_path_is_within(mirror_target, target) or _path_is_within(target, mirror_target) for target in runtime_targets):
             raise SandboxError("Project mirror overlaps a runtime mount")
         runtime_mounts.append(RuntimeMount(mirror, mirror_target))

@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "prepare_sync", "finalize_sync", "review_replies"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "ensure_project", "review_replies"})
 
 
 class RemoteProtocolError(ValueError):
@@ -53,8 +53,7 @@ def validate_request(value: object) -> dict[str, object]:
     expected: dict[str, set[str]] = {
         "prepare_upload": common | {"upload_id"},
         "finalize_upload": common | {"upload_id"},
-        "prepare_sync": common | {"sync_id", "agent_id"},
-        "finalize_sync": common | {"sync_id", "agent_id", "size", "sha256", "base_commit"},
+        "ensure_project": common | {"project_name", "source_path"},
         "start": common | {"upload_id", "request"},
         "status": common | {"agent_id"},
         "history": common | {"agent_id", "limit"},
@@ -75,25 +74,20 @@ def validate_request(value: object) -> dict[str, object]:
         "summarize_history": common | {"agent_id"},
         "review_replies": common | {"repo_path", "unacknowledged_only"},
     }
+    if operation == "continue" and "upload_id" in value:
+        expected["continue"] = expected["continue"] | {"upload_id"}
     if set(value) != expected[operation]:
         raise RemoteProtocolError(f"Invalid fields for remote operation {operation!r}")
     if value.get("schema_version") != SCHEMA_VERSION:
         raise RemoteProtocolError("Unsupported remote protocol schema version")
     _validate_id(value.get("request_id"), "request_id")
-    if operation in {"prepare_upload", "finalize_upload", "start", "prepare_sync", "finalize_sync"}:
-        if operation in {"prepare_sync", "finalize_sync"}:
-            _validate_id(value.get("sync_id"), "sync_id")
-            _validate_id(value.get("agent_id"), "agent_id")
-            if operation == "finalize_sync":
-                _bounded_int(value.get("size"), "size", 1, 1_073_741_824)
-                if not isinstance(value.get("sha256"), str) or len(value["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in value["sha256"]):
-                    raise RemoteProtocolError("Invalid bundle digest")
-                if not isinstance(value.get("base_commit"), str) or len(value["base_commit"]) not in {40, 64} or any(c not in "0123456789abcdef" for c in value["base_commit"]):
-                    raise RemoteProtocolError("Invalid base commit")
-        else:
-            _validate_id(value.get("upload_id"), "upload_id")
+    if operation in {"prepare_upload", "finalize_upload", "start"}:
+        _validate_id(value.get("upload_id"), "upload_id")
         if operation == "start" and not isinstance(value.get("request"), dict):
             raise RemoteProtocolError("start request payload must be an object")
+    elif operation == "ensure_project":
+        if any(not isinstance(value.get(k), str) or not 1 <= len(value[k]) <= 4096 for k in ("project_name", "source_path")):
+            raise RemoteProtocolError("Invalid project identity")
     elif operation == "review_replies":
         if not isinstance(value.get("repo_path"), str) or len(value["repo_path"]) > 4096:
             raise RemoteProtocolError("repo_path must be bounded text")
@@ -118,6 +112,8 @@ def validate_request(value: object) -> dict[str, object]:
         elif operation == "logs":
             _bounded_int(value.get("max_bytes"), "max_bytes", 1, 1_048_576)
         elif operation == "continue":
+            if "upload_id" in value:
+                _validate_id(value["upload_id"], "upload_id")
             messages = value.get("messages")
             if (
                 not isinstance(messages, list)

@@ -226,3 +226,20 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     assert "*** BLURB HERE ***" not in messages[0].get_content()
     assert len(messages) == patch_count + 1
     assert "format-patch" in calls[0]
+
+
+def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
+    import asyncio
+    from remote_agent_service import RemoteAgentService
+    from remote_agent_config import RemoteAgentConfig
+    service = RemoteAgentService.__new__(RemoteAgentService)
+    service.config = RemoteAgentConfig("beep", str(tmp_path))
+    Path(str(service.config.project_root_dir)).mkdir()
+    one, two = "/a_b/c", "/a/b_c"
+    name = one.replace("/", "_")
+    async def check():
+        assert (await service._ensure_project({"project_name": name, "source_path": one}))["collision"] is False
+        assert (await service._ensure_project({"project_name": name, "source_path": one}))["collision"] is False
+        with pytest.warns(RuntimeWarning, match="collision"):
+            assert (await service._ensure_project({"project_name": name, "source_path": two}))["collision"] is True
+    asyncio.run(check())

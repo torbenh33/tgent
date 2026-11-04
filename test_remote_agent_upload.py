@@ -37,15 +37,11 @@ def test_prepare_upload_handler_creates_private_upload_directory(tmp_path: Path)
     assert upload.stat().st_mode & 0o777 == 0o700
 
 
-def test_finalize_upload_requires_nonempty_real_upload(tmp_path: Path) -> None:
+def test_finalize_upload_accepts_empty_real_upload(tmp_path: Path) -> None:
     manager = RemoteUploadManager(tmp_path / "uploads")
     upload = manager.create_incoming("upload-1")
     finalize = manager.finalize_upload_handler()
 
-    with pytest.raises(RemoteUploadError, match="non-empty real directory"):
-        finalize({"upload_id": "upload-1"})
-
-    (upload / "project.txt").write_text("ready", encoding="utf-8")
     assert finalize({"upload_id": "upload-1"}) == {
         "upload_id": "upload-1",
         "status": "complete",

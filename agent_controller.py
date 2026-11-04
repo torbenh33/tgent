@@ -257,11 +257,10 @@ class AgentController:
         request: dict[str, Any],
         *,
         source_root: str | os.PathLike[str] | None = None,
-        _extra_runtime_mounts: tuple[Any, ...] = (),
-        _effective_base_commit: str | None = None,
-        _original_base_commit: str | None = None,
         _mirror_path: str | os.PathLike[str] | None = None,
         _base_commit: str | None = None,
+        _project_name: str | None = None,
+        _sync_checkout: Path | None = None,
     ) -> dict[str, Any]:
         """Start an agent from the controller project or a trusted uploaded checkout.
 
@@ -296,18 +295,15 @@ class AgentController:
         worker_log = None
         created = False
         try:
-            snapshot = create_project_snapshot(selected_project_root, destination)
             mirror = Path(_mirror_path).resolve(strict=True) if _mirror_path is not None else None
+            snapshot = create_project_snapshot(selected_project_root, destination, trusted_mirror=mirror) if mirror else create_project_snapshot(selected_project_root, destination)
+            if _sync_checkout is not None:
+                subprocess.run(["rsync", "-a", "--checksum", "--delete", "--exclude", ".git", str(_sync_checkout) + "/", str(snapshot.project_root) + "/"], check=True)
             _configure_snapshot_git_identity(selected_project_root, snapshot.project_root)
-            original_base_commit = _original_base_commit or snapshot.base_commit
             if _base_commit is not None:
                 if _COMMIT_RE.fullmatch(_base_commit) is None:
                     raise AgentControllerError("Invalid mirror base commit")
                 snapshot = ProjectSnapshot(snapshot.root, snapshot.project_root, _base_commit, snapshot.linked_worktree)
-            if _effective_base_commit is not None:
-                if _COMMIT_RE.fullmatch(_effective_base_commit) is None:
-                    raise AgentControllerError("Continuation sync returned an invalid base commit")
-                snapshot = ProjectSnapshot(snapshot.root, snapshot.project_root, _effective_base_commit, snapshot.linked_worktree)
             socket_dir = Path(self.store.state_root) / "sockets"
             socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(socket_dir, 0o700)
@@ -322,7 +318,7 @@ class AgentController:
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "base_commit": snapshot.base_commit,
-                **({"original_base_commit": original_base_commit, "sync_base": snapshot.base_commit} if _effective_base_commit is not None else {}),
+                **({"project_mirror": str(mirror), "project_name": _project_name} if mirror else {}),
                 "runtime_version": self.runtime_version,
                 "snapshot_root": str(snapshot.root),
                 "snapshot_project": str(snapshot.project_root),
@@ -367,7 +363,7 @@ class AgentController:
                     "PYTHONPATH": str(self.runtime_app_path),
                 },
                 runtime_layout=SandboxRuntimeLayout(
-                    self.runtime_layout.mounts + tuple(_extra_runtime_mounts),
+                    self.runtime_layout.mounts,
                     self.runtime_layout.symlinks,
                 ),
                 project_mirror=mirror,
@@ -830,7 +826,7 @@ class AgentController:
     async def get_history(self, agent_id: str) -> list[dict[str, Any]]:
         return self.store.get_history(self.resolve_agent_id(agent_id))
 
-    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, model: str | None = None, reasoning_effort: str | None = None, sync_callback: Callable[[Path], str] | None = None, sync_bundle_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    async def continue_agent(self, agent_id: str, messages: list[dict[str, Any]], *, model: str | None = None, reasoning_effort: str | None = None, sync_checkout: Path | None = None) -> dict[str, Any]:
         agent_id = self.resolve_agent_id(agent_id)
         validate = self.store.get_metadata(agent_id)
         if model is not None and (not isinstance(model, str) or not model.strip() or len(model) > 200):
@@ -866,28 +862,13 @@ class AgentController:
                 raise AgentControllerError("Agent restart is already in progress")
             restarting.add(agent_id)
             try:
-                sync_base = sync_callback(snapshot_project) if sync_callback is not None else None
-                if sync_base is not None and (not isinstance(sync_base, str) or _COMMIT_RE.fullmatch(sync_base) is None):
-                    raise AgentControllerError("Continuation sync returned an invalid base commit")
-                extra = list(messages)
-                # Sync instructions are queued by the adapter in the exact continuation request.
-                extra_mounts = ()
-                if sync_callback is not None:
-                    if sync_bundle_path is None:
-                        raise AgentControllerError("Continuation bundle path is required for sync")
-                    bundle = Path(sync_bundle_path)
-                    if bundle.is_symlink() or not bundle.is_file():
-                        raise AgentControllerError("Continuation bundle is unavailable")
-                    bundle = bundle.resolve(strict=True)
-                    extra_mounts = (RuntimeMount(bundle, Path("/run/agent-sync/repository.bundle")),)
                 start_options = {"source_root": snapshot_project}
-                if sync_base is not None:
-                    start_options["_effective_base_commit"] = sync_base
-                    start_options["_original_base_commit"] = validate.get("base_commit")
-                if extra_mounts:
-                    start_options["_extra_runtime_mounts"] = extra_mounts
+                if validate.get("project_mirror"):
+                    start_options.update(_mirror_path=validate["project_mirror"], _base_commit=validate["base_commit"], _project_name=validate.get("project_name"))
+                if sync_checkout is not None:
+                    start_options["_sync_checkout"] = sync_checkout
                 restarted = await self.start_agent(
-                    {"schema_version": 1, "history": [*history, *extra], "name": validate.get("name", "Agent"),
+                    {"schema_version": 1, "history": [*history, *messages], "name": validate.get("name", "Agent"),
                      "model": model if model is not None else validate.get("model"),
                      "reasoning_effort": reasoning_effort if reasoning_effort is not None else validate.get("reasoning_effort", "none")},
                     **start_options,
@@ -896,6 +877,8 @@ class AgentController:
                 restarting.discard(agent_id)
             self.store.update_metadata(restarted["agent_id"], {"parent_agent_id": agent_id})
             return {**restarted, "parent_agent_id": agent_id, "queued_messages": len(messages)}
+        if sync_checkout is not None:
+            raise AgentControllerError("Cannot sync a live agent")
         if model is not None or reasoning_effort is not None:
             self.store.update_metadata(agent_id, {
                 **({"model": model} if model is not None else {}),

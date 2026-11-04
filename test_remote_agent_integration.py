@@ -198,60 +198,6 @@ def test_interrupted_upload_cannot_start_and_is_reaped_by_cleanup(tmp_path: Path
     assert not partial.exists()
 
 
-def test_adapter_upload_protocol_and_git_snapshot_end_to_end(tmp_path: Path, monkeypatch) -> None:
-    """Exercise the local adapter through upload publication and snapshot creation."""
-    project = _project(tmp_path / "source-project", "transferred working tree\n")
-    uploads = RemoteUploadManager(tmp_path / "managed-uploads")
-    snapshots = tmp_path / "snapshots"
-    snapshots.mkdir()
-
-    def start_agent(checkout: Path, request: dict[str, object]) -> dict[str, str]:
-        assert request == {"schema_version": 1, "task": "inspect this checkout"}
-        snapshot = _snapshot_or_skip(checkout, snapshots / "adapter-agent")
-        return {"agent_id": "adapter-agent", "snapshot": str(snapshot.project_root)}
-
-    handlers = build_operation_handlers(
-        uploads,
-        start_agent=start_agent,
-        lifecycle_handlers={},
-    )
-
-    class InProcessProtocolClient:
-        def request(self, message: dict[str, object]) -> dict[str, object]:
-            return dispatch_request(message, handlers)
-
-    def local_rsync(argv, *, check):
-        assert check is True
-        assert argv[0:2] == ("rsync", "-a")
-        source = Path(argv[-2].removesuffix("/"))
-        remote_destination = argv[-1].removeprefix("beep:").removesuffix("/")
-        assert remote_destination == "/srv/tgent/uploads/incoming/adapter-upload"
-        destination = uploads.incoming / "adapter-upload"
-        shutil.copytree(source, destination, dirs_exist_ok=True)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(adapter_module, "subprocess", SimpleNamespace(run=local_rsync))
-    adapter = RemoteAgentAdapter(
-        RemoteAgentConfig("beep", "/srv/tgent"),
-        client=InProcessProtocolClient(),
-    )
-
-    result = adapter.start(
-        project,
-        {"schema_version": 1, "task": "inspect this checkout"},
-        request_id="adapter-start",
-        upload_id="adapter-upload",
-    )
-
-    assert result["ok"] is True
-    assert result["result"]["agent_id"] == "adapter-agent"
-    snapshot_project = snapshots / "adapter-agent" / "project"
-    assert (snapshot_project / "tracked.txt").read_text(encoding="utf-8") == "transferred working tree\n"
-    assert (snapshot_project / "local-change.txt").read_text(encoding="utf-8") == "transferred working tree\n"
-    assert not (uploads.incoming / "adapter-upload").exists()
-    assert not (uploads.completed / "adapter-upload").exists()
-
-
 def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypatch, request) -> None:
     """Exercise service start/status/logs/stop/reap using only local resources."""
     from pathlib import PurePosixPath
@@ -273,8 +219,19 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
     )
     fake_bwrap.chmod(0o700)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Integration Test")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "user.email")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "integration@example.invalid")
 
     project = _project(tmp_path / "source", "uploaded project\n")
+    (project / "deleted.txt").write_text("committed\n")
+    _git(project, "add", "deleted.txt")
+    _git(project, "commit", "-m", "add deleted file")
+    (project / "deleted.txt").unlink()
+    (project / ".venv").mkdir()
+    (project / ".venv" / "marker").write_text("venv")
     service = RemoteAgentService(config)
     assert service.controller.worker_command == (
         "/opt/runtime-python/bin/python", "-m", "agent_worker"
@@ -301,13 +258,11 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             })
             assert prepared["ok"] is True
             uploaded_checkout = service.uploads.incoming / "lifecycle-upload"
-            shutil.copytree(project, uploaded_checkout, dirs_exist_ok=True)
-            # The controller intentionally copies the source checkout's Git
-            # identity into its snapshot. Set it explicitly on the uploaded
-            # checkout so this test is independent of the caller's global Git
-            # configuration.
-            _git(uploaded_checkout, "config", "user.name", "Integration Test")
-            _git(uploaded_checkout, "config", "user.email", "integration@example.invalid")
+            shutil.copytree(project, uploaded_checkout, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+            name = str(project).replace("/", "_")
+            await service._ensure_project({"project_name": name, "source_path": str(project)})
+            base = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
+            _git(project, "push", str(config.project_root_dir / name), f"{base}:refs/agent-sync/{base}")
             finalized = await service._dispatch({
                 "schema_version": 1,
                 "operation": "finalize_upload",
@@ -321,7 +276,7 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
                 "operation": "start",
                 "request_id": "start-lifecycle",
                 "upload_id": "lifecycle-upload",
-                "request": {"schema_version": 1, "task": "run lifecycle test"},
+                "request": {"schema_version": 1, "task": "run lifecycle test", "_project_name": name, "_base_commit": base},
             })
             assert started["ok"] is True, (started, startup_errors)
             agent_id = started["result"]["agent_id"]
@@ -337,6 +292,14 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             })
             assert status["ok"] is True
             assert status["result"]["runtime_version"] == "runtime-1"
+            snapshot = Path(status["result"]["snapshot_project"])
+            mirror = Path(str(config.project_root_dir / name))
+            assert (snapshot / ".git/objects/info/alternates").read_text().strip() == str(mirror / "objects")
+            assert subprocess.check_output(["git", "-C", str(snapshot), "rev-parse", "HEAD"], text=True).strip() == base
+            assert (snapshot / "tracked.txt").read_text() == "uploaded project\n"
+            assert (snapshot / "local-change.txt").read_text() == "uploaded project\n"
+            assert not (snapshot / "deleted.txt").exists()
+            assert (snapshot / ".venv" / "marker").read_text() == "venv"
 
             log_path = Path(service.controller.store.get_metadata(agent_id)["worker_log"])
             for _ in range(100):
@@ -363,6 +326,28 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             assert stopped["ok"] is True
             assert stopped["result"]["state"] == "stopped"
 
+            # The local HEAD moves, but continuation keeps the original base
+            # and re-transfers even when the agent already has that base.
+            _git(project, "add", "-A")
+            _git(project, "commit", "-m", "advance source")
+            (project / "tracked.txt").write_text("new working tree\n")
+            (project / "local-change.txt").unlink()
+            _git(project, "push", str(mirror), "HEAD:refs/heads/moving")
+            await service._dispatch({"schema_version": 1, "operation": "prepare_upload", "request_id": "prepare-cont", "upload_id": "continuation"})
+            shutil.copytree(project, service.uploads.incoming / "continuation", dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+            await service._dispatch({"schema_version": 1, "operation": "finalize_upload", "request_id": "finalize-cont", "upload_id": "continuation"})
+            continued = await service._dispatch({"schema_version": 1, "operation": "continue", "request_id": "continue", "agent_id": agent_id, "upload_id": "continuation", "messages": [{"role": "user", "content": "continue"}]})
+            assert continued["ok"], continued
+            child = continued["result"]["agent_id"]
+            child_metadata = service.controller.store.get_metadata(child)
+            child_snapshot = Path(child_metadata["snapshot_project"])
+            assert child_metadata["base_commit"] == base
+            assert child_metadata["project_mirror"] == str(mirror)
+            assert subprocess.check_output(["git", "-C", str(child_snapshot), "rev-parse", "HEAD"], text=True).strip() == base
+            assert (child_snapshot / "tracked.txt").read_text() == "new working tree\n"
+            assert not (child_snapshot / "local-change.txt").exists()
+            assert (child_snapshot / ".git/objects/info/alternates").read_text().strip() == str(mirror / "objects")
+            await service.controller.stop_agent(child)
             reaped = await service._dispatch({
                 "schema_version": 1,
                 "operation": "reap",

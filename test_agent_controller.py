@@ -366,46 +366,6 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
 
 
 @pytest.mark.anyio
-async def test_continue_with_sync_bundle_mounts_fixed_read_only_source(tmp_path) -> None:
-    class Store:
-        def get_metadata(self, _agent_id):
-            return {"agent_id": "old", "state": "halted", "base_commit": "b" * 40, "snapshot_root": str(snapshot_root),
-                    "snapshot_project": str(snapshot_project), "name": "Original", "submitted_head": None}
-
-        def get_history(self, _agent_id):
-            return []
-
-        def update_metadata(self, _agent_id, _values):
-            return {}
-
-    snapshot_root = tmp_path / "snapshots" / "old"
-    snapshot_project = snapshot_root / "project"
-    snapshot_project.mkdir(parents=True)
-    bundle = tmp_path / "verified.bundle"
-    bundle.write_bytes(b"bundle")
-    controller = AgentController.__new__(AgentController)
-    controller.store = Store()
-    controller.snapshot_root = tmp_path / "snapshots"
-    controller._runtimes = {}
-    calls = []
-
-    async def start(request, *, source_root=None, **kwargs):
-        calls.append(kwargs)
-        return {"status": "ok", "agent_id": "new", "state": "running"}
-
-    controller.start_agent = start
-    await controller.continue_agent(
-        "old", [{"role": "user", "content": "continue"}], model="replacement",
-        reasoning_effort="medium", sync_callback=lambda _project: "a" * 40, sync_bundle_path=bundle,
-    )
-    assert calls[0]["_effective_base_commit"] == "a" * 40
-    assert calls[0]["_original_base_commit"] == "b" * 40
-    mount, = calls[0]["_extra_runtime_mounts"]
-    assert mount.source == bundle.resolve()
-    assert mount.target == Path("/run/agent-sync/repository.bundle")
-
-
-@pytest.mark.anyio
 async def test_continue_stopped_agent_rejects_missing_or_unsafe_snapshot(tmp_path) -> None:
     class Store:
         def __init__(self, root, project):
