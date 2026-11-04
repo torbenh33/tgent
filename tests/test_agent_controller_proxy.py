@@ -80,11 +80,16 @@ def _immediate(function, kwargs):
     return result()
 
 
-def test_unsupported_model_rejects_requested_reasoning_effort() -> None:
+def test_compatible_model_forwards_requested_reasoning_effort(monkeypatch) -> None:
     client = LLMClient.__new__(LLMClient)
     client.model = "compatible-provider/model"
     client.reasoning_effort = "none"
     client.chat_completions_options = {}
-    client.client = SimpleNamespace()
-    with pytest.raises(ValueError, match="does not support reasoning_effort"):
-        asyncio.run(client.chat_completions_callback({"messages": [], "reasoning_effort": "medium"}))
+    captured = {}
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(model_dump=lambda **kwargs: {})
+    client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr("llm.asyncio.to_thread", lambda fn, **kwargs: _immediate(fn, kwargs))
+    asyncio.run(client.chat_completions_callback({"messages": [], "reasoning_effort": "medium"}))
+    assert captured["reasoning_effort"] == "medium"
