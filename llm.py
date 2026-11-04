@@ -63,12 +63,6 @@ class LLMClient:
         if unknown:
             raise ValueError(f"Unsupported model request field(s): {', '.join(sorted(unknown))}")
 
-    @staticmethod
-    def _supports_reasoning_effort(model: str) -> bool:
-        # OpenAI reasoning-series models accept reasoning effort. Other
-        # OpenAI-compatible providers/models are not assumed to implement it.
-        return model.casefold().startswith(("o1", "o3", "o4", "gpt-5"))
-
     async def chat_completions_callback(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a response with the Chat Completions API."""
         self._validate_model_params(params)
@@ -78,8 +72,6 @@ class LLMClient:
         effort = params.get("reasoning_effort", self.reasoning_effort)
         request["model"] = model
         if effort != "none":
-            if not self._supports_reasoning_effort(model):
-                raise ValueError(f"Model {model!r} does not support reasoning_effort")
             request["reasoning_effort"] = effort
         else:
             request.pop("reasoning_effort", None)
@@ -104,8 +96,6 @@ class LLMClient:
         if "max_tokens" in params:
             request["max_output_tokens"] = params["max_tokens"]
         if effort != "none":
-            if not self._supports_reasoning_effort(model):
-                raise ValueError(f"Model {model!r} does not support reasoning_effort")
             request["reasoning"] = {"effort": effort}
         else:
             request.pop("reasoning", None)
