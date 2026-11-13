@@ -1,111 +1,86 @@
-# Internal Mail and Event Routing Proposal
+# Internal Agent Mail Workflow Proposal
 
-This document specifies an internal message and notification system built on the existing Mutt/sendmail hook and Maildir spool used by `tgit_review`. It is not an external email integration: messages are local system events and commands carried in mail format. Authentication of external senders is out of scope. Stable object identity, reliable routing, causality, threading, and retry-safe delivery are in scope.
+This document describes a local mail interface to the agent system, built on Mutt's configured `sendmail` command and the Maildir workflow already used by `tgit_review`. This is not an Internet email service. Mail is the user-facing command and conversation format, and Maildir is where received messages are kept.
 
-This proposal is for review. It does not prescribe an immediate implementation or replace the existing review-mail workflow without an explicit migration plan.
+This remains a proposal; it does not prescribe an immediate implementation or replace the existing review-mail workflow without an explicit migration plan.
 
 ## Goals
 
-- Allow a user to send a mail-formatted command to start an agent.
-- Notify the user when agents start, stop, submit patches, or need input.
-- Route review replies to the relevant agent or review object.
-- Keep routine forwarding out of the main/supervisor agent's reasoning loop; the supervisor remains available to manage subagents.
-- Allow a patch-integrator agent or service to collect and apply selected patches under explicit policy.
-- Give addressable system objects stable synthetic mail addresses.
-- Preserve the origin message that caused an object to exist, separately from its parent/manager object.
-- Ensure state changes and notifications can be retried without losing events or generating uncontrolled duplicates.
+- Let a user start and converse with agents by sending mail through Mutt.
+- Generate a mail for each agent-system event, including events produced on the remote side.
+- Route replies deterministically from the `Message-ID` being replied to.
+- Keep a conversation agent's history, while distinguishing it from ordinary task agents.
+- Support the existing mode switch: agents run either locally or remotely, with one active ID namespace.
+- Reuse the project repository containing `mcp_agent` as the default agent context.
 
-## System model
+## Basic model
 
-The existing sendmail command hook deposits mail into a Maildir spool, and `tgit_review` already uses that path for review-related messages. The proposed system extends this internal transport to agent commands and lifecycle events. It does not send real Internet email and does not require user authentication in the external-email sense.
+The recipient is a fixed local entry point: `agent@localhost`. It is not a per-agent address. The local sendmail implementation ingests the message and the agent-mail workflow decides whether it starts a conversation or continues one.
 
-Addressable objects may include:
+- A message **without `In-Reply-To`** starts a fresh, persistent conversation agent. A fresh LLM agent interprets the mail; it can reply directly or start ordinary task agents as needed. The conversation agent retains its history for later replies.
+- A message **with `In-Reply-To`** is routed only by looking up the referenced `Message-ID`. It is not routed by subject, recipient guesses, or body text.
+- If the referenced `Message-ID` is unknown, return a mechanical “unknown recipient” response. Do not reinterpret it as a new task.
+- The default repository context is always the project root containing `mcp_agent`. The agent can choose an appropriate fresh checkout/branch (for example, based on `main`); submodules remain within that project context.
 
-- A user or operator inbox
-- A project
-- An agent
-- A patch/review series
-- A controller or service
-- A patch-integration job
+The local/remote mode is global for the active system: agents are either all local or all remote. Consequently, agent IDs and message routing use one namespace rather than separate local and remote address spaces.
 
-Each object receives a stable synthetic address, for example:
+## Message IDs and reply routing
+
+Every agent-generated mail has a stable, unique `Message-ID` that identifies both the agent and the event, in this form:
 
 ```text
-agent+<canonical-agent-id>@tgit.internal
-review+<series-id>@tgit.internal
-project+<project-id>@tgit.internal
-operator@tgit.internal
+<agent-<agent_id>-<event_id>@localhost>
 ```
 
-These are internal routing identifiers, not necessarily valid or externally deliverable addresses. The mapping from address to canonical object ID must be deterministic and unambiguous. Addresses should not be recycled while messages referring to them may still exist.
+The angle brackets are part of the RFC-style header value; the final form has one closing `>` (for example, `<agent-a17-event42@localhost>`). `agent_id` and `event_id` must use a representation that cannot make the fields ambiguous. Re-fetching or retrying the same event must preserve the original `Message-ID`; it must not generate a new one.
 
-## Object identity, causality, and threading
+On reply, the `In-Reply-To` header names this message ID. The system extracts the agent ID and looks up the referenced message in the local Maildir. It routes only when that ID is present and valid. The local Maildir is the source used to determine whether an already-fetched message ID has been seen; when fetching remote mail, fetch only messages whose IDs are not already present there. Preserve the original message and its ID when importing it.
 
-Each object should track distinct links rather than overloading one “last mail ID” field:
+Maildir is the durable store for mail. This design does not add a separate event ledger or notification outbox for mail delivery: stable message IDs and checking Maildir contents provide retry deduplication. The sendmail/import path must perform the ID check because Maildir itself does not guarantee deduplication by `Message-ID`.
 
-- **`origin_message_id`**: the incoming message that caused the object to be created. For an agent started by a user command, this is the user's start request. It remains immutable for the object's lifetime.
-- **`parent_object_id`**: the object that created, supervises, or manages this object, where applicable. A child agent may have a supervisor agent or review job as its parent even though the user's command is its origin.
-- **`last_received_message_id`**: the most recent incoming message that was accepted as input to this object.
-- **`last_sent_message_id`**: the most recent outgoing message sent by this object.
-- **`last_event_id`** (or equivalent): the last durable internal event processed/emitted by this object, for audit and delivery bookkeeping.
+For every meaningful agent-system event, generate a mail with its stable ID. The event mail should identify the event, agent, outcome, and any relevant patch/review reference or next action. Event mails should be generated by both local and remote agents. Remote events and pending patch submissions can be fetched in batches (for example, alongside `fetch_pending_patches`); repeated fetches retain the same IDs and are skipped if already present in Maildir. “Each event” means each event the system chooses to expose as a mail, not necessarily high-frequency internal progress such as every model token.
 
-For every message, store durable routing and causal metadata in addition to standard mail headers:
+A conversation agent is distinguishable from ordinary task agents by its agent role/type in the agent system, not by a separate mail address or ID namespace. Its outgoing messages use its own agent ID, so replies continue that conversation. A direct reply from the conversation agent does not require starting a task agent.
 
-- Unique internal event/message ID
-- RFC-style `Message-ID`
-- Sender object address and recipient object addresses
-- `In-Reply-To` and `References`, where applicable
-- Causation message/event ID
-- Target object ID and event type
-- Creation time and delivery state
+## Agent names and voice
 
-Mail headers support Mutt threading and human navigation, but are not the sole source of truth. The durable event record is authoritative because messages may be imported, forwarded, or have incomplete threading headers.
+Agent roles remain stable system identifiers; friendly names and voice/persona instructions are configurable and do not affect routing or create separate ID namespaces. The defaults use a light *Roci* crew theme:
 
-### Threading policy
+- **Naomi** — the persistent conversation agent (`conversation` role).
+- **Amos** — ordinary task/work agents (`task` role).
+- **Tycho** — patch integration (`integrator` role).
 
-When responding directly to an incoming message, set `In-Reply-To` to that triggering message's `Message-ID` and extend `References` from its existing references. When an event is a continuation of an object's own conversation, use its recorded `last_sent_message_id` and the relevant reference chain. The causal relation should also be recorded explicitly, so a response can be traced even if headers are malformed or absent.
+Voice instructions are also configurable. As an experiment, Naomi may use a light touch of Belter Creole, while keeping replies clear and avoiding an attempt to imitate it heavily or inconsistently. Other roles can have their own voice instructions or none.
 
-A child agent's origin is the exact message that requested its creation. Its `parent_object_id` independently identifies the supervisor/review object that spawned or manages it. The child can therefore reply in the user's originating thread while remaining manageable by its parent.
-
-## Example lifecycle
-
-1. The user sends a start-agent message to the controller's synthetic address.
-2. The router ingests and records the message and its `Message-ID`.
-3. The controller creates the agent record, setting `origin_message_id` to the request ID and `parent_object_id` as appropriate.
-4. The service sends a started notification with a new `Message-ID`, replying to the start request.
-5. The agent submits a patch queue through `tgit_review`; the patch notification is addressed/threaded in the original task conversation and references the agent/review object.
-6. The user sends review comments as a reply addressed to the agent or review synthetic address.
-7. The router records the incoming review message as the latest received message, then resumes the waiting agent or starts a continuation agent according to lifecycle policy.
-8. The response notification names the newly started/continued agent and carries the relevant patch-queue reference.
+## Message handling flow
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Mutt
-    participant Spool as sendmail hook / Maildir
-    participant Router as Internal mail router
+    participant Sendmail as Local sendmail hook
+    participant Maildir
+    participant Router as Agent mail handling
     participant Agent
-    participant Review as tgit_review
+    participant Remote as Remote agent system (when selected)
 
-    User->>Mutt: Start-agent message
-    Mutt->>Spool: Deposit message
-    Spool->>Router: Deliver to controller address
-    Router->>Agent: Create agent; persist origin Message-ID
-    Agent->>Spool: Started notification (new Message-ID, replies to request)
-    Spool-->>User: Mutt displays notification
-    Agent->>Review: Submit patch queue
-    Review->>Spool: Patch-queue message
-    Spool-->>User: Patch notification in same thread
-    User->>Mutt: Send review comments
-    Mutt->>Spool: Deposit reply
-    Spool->>Router: Route by synthetic agent/review address
-    Router->>Agent: Persist review input; start or resume agent
-    Agent->>Spool: Agent/patch response, threaded to review
+    User->>Mutt: New message to agent@localhost
+    Mutt->>Sendmail: Submit mail
+    Sendmail->>Maildir: Store inbound message
+    Sendmail->>Router: No In-Reply-To: start conversation agent
+    Router->>Agent: Fresh LLM agent with mail and project context
+    Agent->>Maildir: Reply/event mail with stable Message-ID
+    User->>Mutt: Reply to agent mail
+    Mutt->>Sendmail: Submit reply
+    Sendmail->>Router: Resolve In-Reply-To Message-ID in Maildir
+    Router->>Agent: Continue identified agent
+    Remote->>Sendmail: Batch of event mails and pending patches
+    Sendmail->>Maildir: Import only IDs not already present
 ```
 
-## Event and notification model
+## Agent lifecycle and event mails
 
-The system should define a catalog of event types and recipients rather than sending informal mail from arbitrary code paths. Initial events could include:
+The initial event catalog should include the lifecycle and work events already meaningful to the operator, such as:
 
 - `agent.started`
 - `agent.waiting_for_input`
@@ -118,110 +93,80 @@ The system should define a catalog of event types and recipients rather than sen
 - `patch_integration.completed`
 - `patch_integration.failed`
 
-For each event, define the owning object, recipient objects, subject/body template, causal message/event, and whether operator notification is required. “Mail for every event” should mean every durable, externally meaningful event can produce a notification; internal high-frequency events (for example, each model token or transient progress update) should not automatically produce a user-facing message. Event granularity and notification policy need explicit review.
+Each event mail gets one stable `Message-ID`; retries and remote batch fetches must retain it. `In-Reply-To` and `References` should make the mail appear in the relevant Mutt thread. Event mails should be bounded and useful: identify what happened, the agent/event, outcome, relevant patch or review, and any next action. Do not attach full agent transcripts by default.
 
-Notifications should be useful and bounded: identify the event, object name and canonical ID, outcome, relevant patch/review reference, and next action. Full agent transcripts should not be attached by default; provide a reference or a deliberate summary instead.
+The current local-versus-remote switch determines where agents run. In remote mode, event mails (and pending patches where applicable) are fetched and imported in batches. The importer checks Maildir for each message's ID and imports only IDs not already present. The same source message must keep the same ID across retries and fetches.
 
-## Reliable delivery and idempotency
+## Intake and errors
 
-A state transition and its notification intent must not be separated by an unsafe crash window. Use a durable event/outbox pattern:
+The sendmail workflow distinguishes new mail from replies by the presence of `In-Reply-To`:
 
-1. Persist the state transition and an outbox event together, or use an equivalent recoverable protocol.
-2. Deliver the event to the Maildir spool.
-3. Mark it delivered only after successful spool insertion.
-4. On retry, use the same event ID and message ID so duplicate delivery can be detected or made idempotent.
+1. **No `In-Reply-To`:** pass the message to a fresh LLM conversation agent. Keep that agent and its history so subsequent replies can continue the same conversation. It may answer directly or start normal task agents.
+2. **Known `In-Reply-To`:** resolve the exact referenced message and route to the agent ID encoded in its `Message-ID`.
+3. **Unknown `In-Reply-To`:** return a deterministic “unknown recipient” mail. Never guess an agent from the subject, body, recipient, or partial ID, and never fall back to starting a new task.
 
-If the current JSON store remains in use, specify how the state update and outbox write are made recoverable (for example, a journaled event file and atomic rename, with a reconciliation pass). If SQLite is selected later, a transaction can commit state and outbox rows together. The mail spool remains the delivery boundary in either design.
+The command entry address is fixed to `agent@localhost` (or the existing equivalent used by `tgit_review`) rather than encoding agent IDs in recipient addresses. A malformed message ID or one that does not identify a known message is an unknown recipient, not a routing hint.
 
-Inbound processing also needs idempotency. Record the incoming `Message-ID` (or stable spool-entry identity plus a content digest if headers are absent) before applying commands. Reprocessing the same message must not start duplicate agents, append the same review comments twice, or spawn repeated continuations. Define behavior for missing or duplicate `Message-ID` values.
+The mail body is natural-language input for the fresh LLM agent; there is no separate requirement to translate every message into a structured command first. Arbitrary attachments are not automatically privileged executable instructions. The conversation agent may ask questions, respond to the user, or start task agents through the existing agent system.
 
-## Commands and routing
+## Patch and integration workflow
 
-Commands should be explicit and versioned, with a small set of accepted fields. A start-agent message should identify the project and task and may request bounded limits. The router validates the format and returns a clear error message for malformed or unsupported commands. Arbitrary attachments or message text must not be treated as privileged executable instructions. This is not an external authentication system, but deterministic parsing and safe validation remain necessary.
+Agent patch submission continues to use `tgit_review`. A patch event mail should identify the submitting agent and review/patch reference and be threaded into the relevant conversation. Reply routing remains based on the `Message-ID` being replied to, which identifies the mail's originating agent.
 
-A review reply should route by its synthetic recipient and durable thread/series mapping, not by subject text alone. When headers provide conflicting object IDs, reject or quarantine the message with a diagnostic rather than guessing. If the addressed agent is no longer waiting, report that state and preserve the reply for operator action; do not silently discard it.
+A patch integrator may collect submissions, verify their bases and dispositions, apply selected patches in an isolated integration branch/worktree, and run tests. It should report per-patch results and preserve original artifacts. Applying patches is distinct from merging or pushing to the project's main branch; final merge/push requires the configured explicit operator approval. Conflicts, stale bases, duplicate commits, and failed tests should be reported without silently dropping submissions.
 
-## Supervisor and patch integration roles
+## Suggested message metadata
 
-The mail router performs deterministic intake, event recording, notification generation, and routing. It should not ask the main/supervisor agent to forward every message. The supervisor agent is still useful for planning, inspecting agent state, deciding which subagents to start, and helping the operator manage work.
-
-A patch integrator may collect submissions, verify their bases and dispositions, apply selected patches in an isolated integration branch/worktree, and run tests. It should report per-patch results and preserve original artifacts. Applying patches is distinct from merging/pushing to the project's main branch; any final merge or push should require an explicit operator policy/approval. Conflicts, stale bases, duplicate commits, and failed tests should be reported without silently dropping submissions.
-
-## Suggested object/message storage fields
-
-An object record may contain:
+The message headers and existing agent-system records should provide the information needed for routing and conversation continuity:
 
 ```text
-object_id
-object_type
-synthetic_address
-parent_object_id
-origin_message_id
-last_received_message_id
-last_sent_message_id
-last_event_id
+Message-ID: <agent-<agent_id>-<event_id>@localhost>
+In-Reply-To: <the Message-ID being answered, when applicable>
+References: <relevant prior Message-IDs, when applicable>
+To: agent@localhost
+```
+
+The agent record needs to distinguish at least:
+
+```text
+agent_id
+agent_role                 # conversation or task, for example
 lifecycle_state
-revision
-created_at
-updated_at
+project_root
+conversation/history reference
 ```
 
-An event/message record may contain:
-
-```text
-event_id
-message_id
-object_id
-event_type
-causation_id
-sender_address
-recipient_addresses
-in_reply_to
-references
-payload_reference
-created_at
-delivery_state
-attempt_count
-last_error
-```
-
-This is illustrative, not a finalized schema. Large bodies or artifacts may remain in Maildir or artifact storage, with durable references in state.
+This is illustrative, not a finalized schema. The key routing information is the stable message ID and the agent ID it contains; Maildir retains the message used to resolve a reply.
 
 ## Acceptance criteria
 
-Before implementation is considered complete, tests should establish that:
+Tests should establish that:
 
-1. A start command creates exactly one agent when ingested once or retried with the same message identity.
-2. The created agent retains the start request as `origin_message_id` and records its managing object independently as `parent_object_id`.
-3. A started notification has a new `Message-ID`, replies to the start request, and appears in the same Mutt thread.
-4. An agent patch notification is causally associated with the agent and review series and has the expected threading headers.
-5. Review comments addressed to a synthetic agent/review address reach the correct object and are recorded as the latest received message.
-6. A reply to a waiting agent resumes or continues the correct agent; a reply to a non-waiting agent is preserved and produces an actionable response.
-7. Missing, duplicate, malformed, or conflicting message/thread identities do not cause guessed routing or duplicate side effects.
-8. A crash between state transition and spool delivery results in a retryable outbox event, not a lost notification.
-9. Reprocessing an outbox event does not create uncontrolled duplicate messages or duplicate agent operations.
-10. Event recipients and notification contents follow the event catalog; routine routing does not require supervisor-agent forwarding.
-11. Patch integration reports each selected patch's result, preserves source artifacts, and does not merge/push without the configured explicit authorization.
+1. A new message without `In-Reply-To` starts a conversation agent, and retrying an already ingested message does not start another one.
+2. A conversation agent is distinguishable from ordinary task agents and retains history across replies.
+3. A reply with a known `In-Reply-To` routes to exactly the agent identified by the referenced message's `Message-ID`.
+4. An unknown or malformed `In-Reply-To` produces a mechanical “unknown recipient” response and never starts a new task or guesses a route.
+5. Agent-generated event mails have stable IDs containing the agent and event identifiers; retries preserve the same ID.
+6. Local and remote event mails are handled with the same namespace and routing rules.
+7. Remote batch fetching imports only message IDs not already present in Maildir, while preserving the original message ID.
+8. Replies and event mails have suitable threading headers for Mutt.
+9. The project root containing `mcp_agent` is the default context; submodules are part of that project context.
+10. Patch integration reports each selected patch's result, preserves source artifacts, and does not merge/push without explicit authorization.
 
-## Open questions for the meeting
+## Remaining questions
 
-1. What synthetic address format should be used, and are addresses derived directly from canonical IDs or looked up in an address registry?
-2. Which objects receive addresses: agents and review series only, or also projects, integration jobs, and supervisors?
-3. Which events generate user-visible mail, and which are recorded internally only?
-4. Should a review reply continue the same agent or spawn a new continuation agent by default? Which state/patch conditions decide?
-5. What is the canonical thread for a patch submission when a child agent was spawned by a review object but originated from a user command?
-6. How are messages with missing or duplicate `Message-ID` headers identified idempotently?
-7. Should the outbox live in the JSON state store, a journal, or a future database? What recovery process reconciles outbox and Maildir state?
-8. What patch selection and application policy can an integrator perform automatically, and which actions require approval?
-9. What retention policy applies to inbound messages, event records, Maildir entries, and reaped-object tombstones?
-10. How should the system present command errors and replies that arrive after an agent has stopped or been reaped?
+1. What exact syntax/escaping should be used for `agent_id` and `event_id` in the `Message-ID`, and should a parser validate against a locally known message as well as parse the ID?
+2. What is the existing `tgit_review` reply-to address and precise Maildir layout, and should the accepted recipient be exactly `agent@localhost` or preserve a compatible alias?
+3. Which lifecycle/work events should produce mail initially, and which high-frequency internal events are excluded?
+4. What stable identity is used for inbound mail that has no `Message-ID`, so a sendmail retry cannot start duplicate conversation agents?
+5. Which remote batch API returns event mails, and how are fetched items retained remotely after local import?
+6. How should replies to an agent that is stopped, failed, or otherwise unavailable be presented while preserving the mail and conversation history?
 
 ## Proposed next steps
 
-1. Review and agree on object identity, `origin_message_id` versus `parent_object_id`, event granularity, and threading rules.
-2. Inventory the current `tgit_review` sendmail hook, Maildir layout, Message-ID generation, reply capture, and existing tests.
-3. Define a versioned event catalog and inbound command format.
-4. Add protocol/contract tests using a temporary Maildir before routing lifecycle events through it.
-5. Implement a minimal vertical slice: start-agent command, started notification, waiting-for-input notification, and threaded reply delivery.
-6. Add outbox/idempotency and recovery before enabling notifications for every lifecycle event.
-7. Introduce patch collection/integration as a separate capability with isolated worktrees and explicit approval boundaries.
+1. Confirm the fixed recipient and inspect the existing `tgit_review` sendmail/Maildir behavior.
+2. Define and test the `Message-ID` format, extraction, and lookup against actual stored messages.
+3. Implement the minimal local vertical slice: unthreaded mail starts a persistent conversation agent; a known reply continues it; an unknown reply receives the mechanical error.
+4. Add event mails using stable IDs, then support remote batch import with Maildir ID checks alongside pending patch fetching.
+5. Add contract tests for retries, threading, local/remote mode, and patch notifications before enabling the workflow broadly.
+6. Keep patch integration separate, using isolated worktrees and explicit approval boundaries.
