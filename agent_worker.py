@@ -131,8 +131,10 @@ resource runs pytest in the project context). If it is unavailable, look for the
 project virtual environment's pytest executable, such as `.venv/bin/pytest` or
 `venv/bin/pytest`, and invoke that directly; do not assume system `pytest` exists
 or replace pytest with unittest. Do not install dependencies.
-For continuation syncs, fetch `/run/agent-sync/repository.bundle` and rebase onto
-the supplied sync base commit before continuing work. The bundle is read-only.
+When continuing work, inspect the latest source refs with `git fetch origin` and review
+what changed before deciding whether to rebase or merge. Explain risks and conflicts;
+do not rewrite or merge the agent's work automatically, and decline if integration
+looks unsafe. The source repository is available through the clone's `origin` remote.
 
 Avoid repeated broad searches; if a targeted inspection does not find the answer,
 report what you checked and what remains uncertain.

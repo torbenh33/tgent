@@ -44,7 +44,7 @@ def test_start_prepares_upload_rsyncs_and_requests_start(tmp_path, monkeypatch) 
     assert rsync[-2:] == (str(project) + "/", "beep:/srv/tgent/uploads/incoming/upload-1/")
 
 
-def test_continuation_pushes_recorded_base_and_transfers_again(tmp_path, monkeypatch):
+def test_continuation_publishes_refs_without_upload(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     base = "b" * 40
@@ -59,10 +59,10 @@ def test_continuation_pushes_recorded_base_and_transfers_again(tmp_path, monkeyp
     client = _FakeClient([{"ok": True, "result": {"base_commit": base, "project_name": name}}] + [{"ok": True, "result": {}}] * 4)
     adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", "/srv/tgent"), client=client)
     adapter.continue_agent("agent-1", [{"role": "user", "content": "continue"}], project_root=project)
-    assert [m["operation"] for m in client.messages] == ["status", "ensure_project", "prepare_upload", "finalize_upload", "continue"]
+    assert [m["operation"] for m in client.messages] == ["status", "ensure_project", "continue"]
     assert next(c for c in calls if "push" in c)[-2:] == ("+refs/*:refs/*", f"{base}:refs/agent-sync/{base}")
-    assert any(c[0] == "rsync" for c in calls)
-    assert client.messages[-1]["upload_id"] == client.messages[2]["upload_id"]
+    assert not any(c[0] == "rsync" for c in calls)
+    assert not any(m["operation"] in {"prepare_upload", "finalize_upload"} for m in client.messages)
 
 
 def test_live_review_continuation_does_not_replace_agent_worktree():

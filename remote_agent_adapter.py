@@ -30,7 +30,7 @@ class RemoteAgentAdapter:
         self.client = client or RemoteAgentClient(config)
         self.rsync = rsync
 
-    def _sync_project(self, project_root, *, base=None, expected_name=None, upload_id=None):
+    def _sync_project(self, project_root, *, base=None, expected_name=None, upload_id=None, upload_files=True):
         project = Path(project_root).expanduser().resolve(strict=True)
         git = ["git", "-C", str(project)]
         try:
@@ -51,6 +51,8 @@ class RemoteAgentAdapter:
             remote = str(self.config.project_root_dir / name)
             destination = f"{self.config.ssh_host}:{shlex.quote(remote)}"
             subprocess.run([*git, "push", destination, "+refs/*:refs/*", f"{base}:refs/agent-sync/{base}"], check=True, capture_output=True)
+            if not upload_files:
+                return name, base, None
             selected_upload = upload_id or uuid.uuid4().hex
             self._request("prepare_upload", upload_id=selected_upload)
             remote_path = str(self.config.uploads_dir / "incoming" / selected_upload)
@@ -105,8 +107,8 @@ class RemoteAgentAdapter:
         base, name = status.get("base_commit"), status.get("project_name")
         if not isinstance(base, str) or not isinstance(name, str):
             raise RemoteAgentAdapterError("Agent has no recorded mirror or base commit")
-        _, _, upload = self._sync_project(project_root, base=base, expected_name=name)
-        return self._request("continue", agent_id=agent_id, messages=messages, upload_id=upload)
+        self._sync_project(project_root, base=base, expected_name=name, upload_files=False)
+        return self._request("continue", agent_id=agent_id, messages=messages)
 
     def get_agent_tools(self, agent_id: str) -> dict[str, object]:
         """Retrieve discovered remote project MCP tools and enabled status."""

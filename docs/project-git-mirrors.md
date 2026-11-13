@@ -21,9 +21,9 @@ For each remote-agent start or project sync:
 1. Ensure a bare Git repository exists in the remote project directory.
 2. Push all local Git refs to the remote repository (force-updating corresponding refs so deleted/stale or moved refs are mirrored), and separately publish the captured base commit at `refs/agent-sync/<SHA>`. Capture the local `HEAD` SHA as the agent's base commit; do not rely on the remote repository's mutable `HEAD` or a shared moving ref. Concurrent pushes may update remote refs, but each agent must use the exact SHA it pushed.
 3. Make the remote project repository available inside the agent sandbox as a read-only mount. Create the agent's private clone with `--no-checkout` and `git clone --reference` pointing at the mounted repository. Fetch all refs into a temporary namespace, transfer their object IDs to their original ref names with `git update-ref`, remove the temporary refs, and then check out the captured base-commit SHA. This avoids Git refusing to update a checked-out branch. The clone intentionally depends on the referenced repository for its Git objects; do not use `--dissociate`.
-4. Rsync the local working tree into the agent work directory, excluding only `.git`, so tracked edits, untracked files, and the rest of the current project contents (including `.venv/`, as today) are present without replacing the agent clone's Git metadata. Do not add other path exclusions.
+4. For a new start, transfer the local working tree into the agent work directory, excluding only `.git`. Do not use this file transfer to replace an existing agent's working tree during continuation.
 
-For continuations, retain and use the agent's recorded base-commit SHA rather than resolving `HEAD` again. A new start may capture a new SHA.
+For continuations, publish the source refs and retain the agent's recorded base-commit SHA rather than resolving `HEAD` again. Do not rsync/overlay source working-tree files into the agent's existing work directory. The agent can inspect the new source refs by fetching `origin`, then decide whether rebase or merge is appropriate; it must not integrate automatically when doing so risks losing work.
 
 Use argument-vector subprocess calls with configured SSH destinations and fixed remote roots. Avoid shell interpolation of project paths. Preserve the existing behavior that an unsuccessful transfer does not result in a successful agent start.
 
@@ -41,7 +41,7 @@ Repeated syncs may push the latest `HEAD` and rsync the working tree again. This
 ## Initial tests
 
 1. A remote start publishes all local refs and the explicit base-SHA ref, seeds those refs into a reference clone without checked-out-branch update errors, checks out the exact base SHA, then rsyncs files while excluding `.git`.
-2. Tracked edits, untracked files, and deletions in the local working tree are reflected according to the rsync options; `.git` is the only excluded path and the agent clone's Git metadata remains intact.
+2. Tracked edits, untracked files, and deletions in a new-start working tree are reflected according to the rsync options; continuations do not overwrite the existing agent worktree.
 3. Concurrent pushes may move remote refs, but each start/continuation checks out its recorded base-commit SHA; a new sync transfers the current working tree again.
 4. An interrupted push or rsync is reported as a failed sync; retrying performs the workflow again.
 5. Project paths map consistently to remote directory names, and repositories with submodules fail clearly.

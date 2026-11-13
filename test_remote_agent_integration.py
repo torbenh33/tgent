@@ -303,6 +303,8 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
                 expected = subprocess.check_output(["git", "--git-dir", str(mirror), "rev-parse", ref], text=True).strip()
                 actual = subprocess.check_output(["git", "-C", str(snapshot), "rev-parse", ref], text=True).strip()
                 assert actual == expected
+            source = str(project).replace("/", "_")
+            assert subprocess.check_output(["git", "-C", str(snapshot), "config", "--get", "remote.origin.url"], text=True).strip() == str(mirror)
             assert (snapshot / "tracked.txt").read_text() == "uploaded project\n"
             assert (snapshot / "local-change.txt").read_text() == "uploaded project\n"
             assert not (snapshot / "deleted.txt").exists()
@@ -333,17 +335,15 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             assert stopped["ok"] is True
             assert stopped["result"]["state"] == "stopped"
 
-            # The local HEAD moves, but continuation keeps the original base
-            # and re-transfers even when the agent already has that base.
+            # Source changes are published independently; continuation keeps
+            # the existing agent snapshot without overlaying source files.
             _git(project, "add", "-A")
             _git(project, "commit", "-m", "advance source")
             (project / "tracked.txt").write_text("new working tree\n")
             (project / "local-change.txt").unlink()
             _git(project, "push", str(mirror), "HEAD:refs/heads/moving")
-            await service._dispatch({"schema_version": 1, "operation": "prepare_upload", "request_id": "prepare-cont", "upload_id": "continuation"})
-            shutil.copytree(project, service.uploads.incoming / "continuation", dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-            await service._dispatch({"schema_version": 1, "operation": "finalize_upload", "request_id": "finalize-cont", "upload_id": "continuation"})
-            continued = await service._dispatch({"schema_version": 1, "operation": "continue", "request_id": "continue", "agent_id": agent_id, "upload_id": "continuation", "messages": [{"role": "user", "content": "continue"}]})
+            _git(project, "push", str(mirror), "+refs/*:refs/*", f"{base}:refs/agent-sync/{base}")
+            continued = await service._dispatch({"schema_version": 1, "operation": "continue", "request_id": "continue", "agent_id": agent_id, "messages": [{"role": "user", "content": "continue"}]})
             assert continued["ok"], continued
             child = continued["result"]["agent_id"]
             child_metadata = service.controller.store.get_metadata(child)
@@ -351,8 +351,8 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             assert child_metadata["base_commit"] == base
             assert child_metadata["project_mirror"] == str(mirror)
             assert subprocess.check_output(["git", "-C", str(child_snapshot), "rev-parse", "HEAD"], text=True).strip() == base
-            assert (child_snapshot / "tracked.txt").read_text() == "new working tree\n"
-            assert not (child_snapshot / "local-change.txt").exists()
+            assert (child_snapshot / "tracked.txt").read_text() == "uploaded project\n"
+            assert (child_snapshot / "local-change.txt").read_text() == "uploaded project\n"
             assert (child_snapshot / ".git/objects/info/alternates").read_text().strip() == str(mirror / "objects")
             await service.controller.stop_agent(child)
             reaped = await service._dispatch({

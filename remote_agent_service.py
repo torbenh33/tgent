@@ -330,12 +330,7 @@ class RemoteAgentService:
     async def _continue(self, request):
         agent_id = request["agent_id"]
         messages = [dict(message) for message in request["messages"]]
-        upload_id = request.get("upload_id")
-        if upload_id is None:
-            return await self.controller.continue_agent(agent_id, messages)
-        async def continue_with_upload(checkout, _request):
-            return await self.controller.continue_agent(agent_id, messages, sync_checkout=checkout)
-        return await self.uploads.start_async_handler(continue_with_upload)({"upload_id": upload_id, "request": {}})
+        return await self.controller.continue_agent(agent_id, messages)
 
     async def _stop(self, request):
         return await self.controller.stop_agent(request["agent_id"])
