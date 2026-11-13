@@ -55,6 +55,20 @@ def test_model_complete_forwards_request_and_enforces_call_limit() -> None:
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize(("configured_effort", "expected_effort"), [(None, "low"), ("none", "none"), ("high", "high")])
+def test_llm_client_reasoning_effort_default_and_override(tmp_path, monkeypatch, configured_effort, expected_effort) -> None:
+    settings = '[settings]\nbase_url = "http://localhost/v1"\napi_key = "test"\nmodel = "test-model"\n'
+    if configured_effort is not None:
+        settings += f'reasoning_effort = "{configured_effort}"\n'
+    config = tmp_path / "config.toml"
+    config.write_text(settings)
+    monkeypatch.setattr("llm.OpenAI", lambda **_kwargs: object())
+
+    client = LLMClient(config)
+
+    assert client.reasoning_effort == expected_effort
+
+
 def test_chat_provider_propagates_configured_model_and_reasoning_effort(monkeypatch) -> None:
     client = LLMClient.__new__(LLMClient)
     client.model = "o3-mini"

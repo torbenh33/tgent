@@ -20,7 +20,7 @@ class LLMClient:
         self.base_url = settings.get('base_url')
         self.api_key = settings.get('api_key')
         self.model = settings.get('model')
-        self.reasoning_effort = settings.get('reasoning_effort', 'none')
+        self.reasoning_effort = settings.get('reasoning_effort', 'low')
         self.api = settings.get('api', 'chat.completions')
         if isinstance(self.api, str):
             self.api = self.api.strip().casefold()
