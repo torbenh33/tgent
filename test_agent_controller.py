@@ -366,6 +366,46 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("state", ["starting", "running", "stopping", "failed", "reaped"])
+async def test_continue_rejects_noncontinuable_lifecycle_states(state: str) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": state}
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    with pytest.raises(AgentControllerError, match=f"cannot continue from state {state}"):
+        await controller.continue_agent("old", [{"role": "user", "content": "more"}])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("state", ["awaiting_review", "review_received"])
+async def test_continue_rejects_inactive_review_states(state: str) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": state}
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._runtimes = {}
+    with pytest.raises(AgentControllerError, match="Only inactive halted or stopped agents"):
+        await controller.continue_agent("old", [{"role": "user", "content": "more"}])
+
+
+@pytest.mark.anyio
+async def test_continue_rejects_inactive_submitted_patch_even_when_stopped(tmp_path) -> None:
+    class Store:
+        def get_metadata(self, _agent_id):
+            return {"agent_id": "old", "state": "stopped", "submitted_head": "a" * 40}
+
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller._runtimes = {}
+    with pytest.raises(AgentControllerError, match="submitted patch cannot be restarted"):
+        await controller.continue_agent("old", [{"role": "user", "content": "more"}])
+
+
+@pytest.mark.anyio
 async def test_continue_stopped_agent_rejects_missing_or_unsafe_snapshot(tmp_path) -> None:
     class Store:
         def __init__(self, root, project):

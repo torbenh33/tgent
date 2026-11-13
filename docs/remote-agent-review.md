@@ -49,13 +49,39 @@ To send feedback to an agent that is still live, explicitly continue it with `co
 ]
 ```
 
-The `messages` argument is a list of conversation message objects; include enough review and patch context for the agent to understand the comment. `continue_agent` resumes a live waiting agent. Review replies are **not** automatically forwarded to the agent, and `acknowledge_reviews` only marks replies as seen—it does not send feedback or mark comments fixed. Acknowledge IDs after you have handled them, for example:
+The `messages` argument is a list of conversation message objects; include enough review and patch context for the agent to understand the comment. `continue_agent` sends feedback to a live waiting agent, or (for eligible inactive `halted`/`stopped` agents without a submitted patch) creates a new child from saved history and snapshot. It does not resume an inactive `awaiting_review`/`review_received` worker. See [Continuation and recovery by lifecycle state](#continuation-and-recovery-by-lifecycle-state) below for the full state matrix, restrictions, and what a child restart preserves or resets. Review replies are **not** automatically forwarded to the agent, and `acknowledge_reviews` only marks replies as seen—it does not send feedback or mark comments fixed. Acknowledge IDs after you have handled them, for example:
 
 ```text
 acknowledge_reviews(series_id="remote-a-123", review_ids=["<review-id>"])
 ```
 
 If the agent is stopped or unavailable, keep the review visible and provide feedback when continuing an available agent; do not treat acknowledgement as resolution. The agent's subsequent committed submission can be imported as another revision under the same `remote-<agent-id>` series. Check the revision and patch IDs to see its response.
+
+## Continuation and recovery by lifecycle state
+
+`continue_agent(agent_id, messages)` has two distinct modes: it queues messages for a worker process that is still alive, or it starts a **new child agent** for an inactive `halted`/`stopped` record. It does not resurrect the old process. The controller first requires the recorded state to be one of `halted`, `stopped`, `awaiting_review`, or `review_received`; process liveness then determines which mode is possible. Use the table for both local and remote controllers:
+
+| Recorded state | Can `continue_agent` proceed? | Reason and operator action |
+| --- | --- | --- |
+| `starting` | No | Not an accepted continuation state. Let startup complete and inspect status/logs; if startup failed, the worker will settle to `failed`. Start a fresh agent if it cannot be recovered. |
+| `running` | No | The agent is already working; continuation is only for a waiting worker, not a way to interrupt/add a concurrent turn. Wait, inspect status/history/log, or `stop_agent` if intentionally abandoning it. After a stop, an eligible unsubmitted `stopped` agent can be continued as a child. |
+| `stopping` | No | Shutdown is in progress and is not an accepted state. Wait for the terminal state (`stopped`, `halted`, or `failed`) before choosing an action. |
+| `halted` | Yes, if inactive; also queues feedback if the worker is still alive | A natural model turn ended without tool calls, or the worker is awaiting an operator command (`stop_reason=awaiting_command`). Inactive, unsubmitted work starts a child. For a still-live waiting process, messages are queued to that same worker. Use `get_agent_history` to inspect its retained transcript first. |
+| `stopped` | Yes, if inactive and no `submitted_head` | Operator stop or controller restart ended the process. It starts a child, not the old process. A submitted patch blocks restart; finish patch review/disposition instead. `restart_agents` is a convenience for this state only. |
+| `awaiting_review` | Only if a worker process is still alive | This normally means a patch was submitted and the worker is waiting for review feedback. With a live worker, messages are queued to it. If inactive, restart is explicitly refused (`Only inactive halted or stopped agents can be restarted`); review the patch, then stop/acknowledge or reject as appropriate. Never treat a submitted patch as restartable. |
+| `review_received` | Only if a worker process is still alive | Feedback has already been queued and the worker may be processing it. Another live call queues more messages. If the worker is inactive, this state is not a restart state; the controller reports that only inactive halted/stopped agents can be restarted. Check status/history and wait for its resulting state. |
+| `failed` | No | A worker error/nonzero exit is terminal for continuation; neither `continue_agent` nor `restart_agents` accepts it. Inspect `get_agent_log` and `get_agent_history`; use a fresh `start_agent` for recovery. If useful, provide the old history explicitly as start-request `history` (and include a new task/message); this starts from the current configured project, not the failed agent's snapshot. Resolve or preserve any submitted patch before cleanup. |
+| `reaped` | No; normally the ID is no longer found | Reaping removes the controller record, saved history and managed snapshot. There is no in-controller recovery path. Start a new agent and reconstruct context from independently retained artifacts/notes. |
+
+A record with a missing/unrecognized state is also rejected by the accepted-state check (`Agent cannot continue from state ...`); inspect status/storage and use a fresh `start_agent` rather than guessing a transition. `reaped` records are normally absent altogether. These state rules do not override other continuation checks. Inactive restarts require a valid, extant snapshot project under the managed snapshot root, no submitted patch, and history-plus-new-messages within configured size limits. Invalid/missing snapshots and oversized transcripts are rejected rather than silently starting from another checkout. A live worker cannot be synced to another checkout; supplying `sync_checkout` in that case fails.
+
+### What a child restart keeps and what it does not
+
+For an inactive halted/stopped agent, `continue_agent` reads its complete persisted conversation and starts a new agent with that history followed by the supplied messages. It uses the recorded snapshot project as the new source checkout; for mirror-backed projects it carries the mirror/base-commit/project identity options forward. It also carries the name, model and reasoning effort unless explicitly overridden. The new metadata records `parent_agent_id`; the original record/history/snapshot are not consumed or rewritten by making the child.
+
+This is a fresh worker with a fresh agent ID, process, runtime counters/budgets, tool/session state and new managed snapshot/log; it is not a process checkpoint or provider-side model-session resume. Only the saved transcript and project contents/Git state in the source snapshot provide continuity. Restart creates a new snapshot from that source, so subsequent child edits do not modify the parent's snapshot. Tool allowlists and other in-memory controller state are initialized anew, not copied from the parent. `restart_agents` supplies the generic user message “Resume the previous task from the saved history.”; use `continue_agent` directly when specific instructions or review feedback are needed.
+
+A failed agent is deliberately not in the restart set, although its saved history/snapshot may still exist: diagnose first and explicitly start a replacement, optionally seeding history. A submitted patch is a separate protection boundary: an **inactive** submitted-patch agent cannot be restarted even if its state is otherwise `halted`/`stopped`; retain/import/review the patch, then record an explicit applied acknowledgement or rejection before eligible reaping. A still-live `awaiting_review` worker can receive feedback, but that is continuation of the live worker—not permission to discard or bypass its submitted patch.
 
 ## Other useful review tools
 
