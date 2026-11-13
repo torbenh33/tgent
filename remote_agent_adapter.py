@@ -49,7 +49,8 @@ class RemoteAgentAdapter:
             if ensured.get("collision"):
                 warnings.warn(f"Project mirror name collision: {name}", RuntimeWarning)
             remote = str(self.config.project_root_dir / name)
-            subprocess.run([*git, "push", f"{self.config.ssh_host}:{shlex.quote(remote)}", f"{base}:refs/agent-sync/{base}"], check=True, capture_output=True)
+            destination = f"{self.config.ssh_host}:{shlex.quote(remote)}"
+            subprocess.run([*git, "push", destination, "+refs/*:refs/*", f"{base}:refs/agent-sync/{base}"], check=True, capture_output=True)
             selected_upload = upload_id or uuid.uuid4().hex
             self._request("prepare_upload", upload_id=selected_upload)
             remote_path = str(self.config.uploads_dir / "incoming" / selected_upload)

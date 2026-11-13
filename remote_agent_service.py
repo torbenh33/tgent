@@ -284,7 +284,16 @@ class RemoteAgentService:
         if not isinstance(base, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base) is None:
             raise RemoteProtocolError("Invalid project mirror base commit")
         work = repository.parent / (name + "-work-" + secrets.token_hex(8))
-        subprocess.run(["git", "clone", "--no-local", "--reference", str(repository), str(repository), str(work)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "--no-local", "--no-checkout", "--reference", str(repository), str(repository), str(work)], check=True, capture_output=True)
+        # Fetch refs under a temporary namespace first: writing directly to
+        # refs/* can fail when that includes the currently checked-out branch.
+        subprocess.run(["git", "-C", str(work), "fetch", str(repository), "+refs/*:refs/agent-mirror/*"], check=True, capture_output=True)
+        mirrored_refs = subprocess.run(["git", "-C", str(work), "for-each-ref", "--format=%(refname) %(objectname)", "refs/agent-mirror/"], check=True, capture_output=True, text=True).stdout
+        for line in mirrored_refs.splitlines():
+            temporary_ref, object_id = line.split()
+            original_ref = "refs/" + temporary_ref.removeprefix("refs/agent-mirror/")
+            subprocess.run(["git", "-C", str(work), "update-ref", original_ref, object_id], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "update-ref", "-d", temporary_ref], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(work), "checkout", "--detach", base], check=True, capture_output=True)
         subprocess.run(["rsync", "-a", "--checksum", "--exclude", ".git", "--delete", str(checkout) + "/", str(work) + "/"], check=True, capture_output=True)
         return await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository, _project_name=name)

@@ -226,6 +226,9 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
     monkeypatch.setenv("GIT_CONFIG_VALUE_1", "integration@example.invalid")
 
     project = _project(tmp_path / "source", "uploaded project\n")
+    _git(project, "branch", "feature/test")
+    _git(project, "tag", "v-test")
+    _git(project, "update-ref", "refs/custom/test", "HEAD")
     (project / "deleted.txt").write_text("committed\n")
     _git(project, "add", "deleted.txt")
     _git(project, "commit", "-m", "add deleted file")
@@ -262,7 +265,7 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             name = str(project).replace("/", "_")
             await service._ensure_project({"project_name": name, "source_path": str(project)})
             base = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
-            _git(project, "push", str(config.project_root_dir / name), f"{base}:refs/agent-sync/{base}")
+            _git(project, "push", str(config.project_root_dir / name), "+refs/*:refs/*", f"{base}:refs/agent-sync/{base}")
             finalized = await service._dispatch({
                 "schema_version": 1,
                 "operation": "finalize_upload",
@@ -296,6 +299,10 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             mirror = Path(str(config.project_root_dir / name))
             assert (snapshot / ".git/objects/info/alternates").read_text().strip() == str(mirror / "objects")
             assert subprocess.check_output(["git", "-C", str(snapshot), "rev-parse", "HEAD"], text=True).strip() == base
+            for ref in ("refs/heads/feature/test", "refs/tags/v-test", "refs/custom/test"):
+                expected = subprocess.check_output(["git", "--git-dir", str(mirror), "rev-parse", ref], text=True).strip()
+                actual = subprocess.check_output(["git", "-C", str(snapshot), "rev-parse", ref], text=True).strip()
+                assert actual == expected
             assert (snapshot / "tracked.txt").read_text() == "uploaded project\n"
             assert (snapshot / "local-change.txt").read_text() == "uploaded project\n"
             assert not (snapshot / "deleted.txt").exists()

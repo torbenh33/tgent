@@ -38,7 +38,7 @@ def test_start_prepares_upload_rsyncs_and_requests_start(tmp_path, monkeypatch) 
     assert [m["operation"] for m in client.messages] == ["ensure_project", "prepare_upload", "finalize_upload", "start"]
     assert client.messages[-1]["request"]["_base_commit"] == base
     assert client.messages[-1]["request"]["_project_name"] == str(project).replace("/", "_")
-    assert next(c for c in calls if "push" in c)[-1] == f"{base}:refs/agent-sync/{base}"
+    assert next(c for c in calls if "push" in c)[-2:] == ("+refs/*:refs/*", f"{base}:refs/agent-sync/{base}")
     rsync = next(c for c in calls if c[0] == "rsync")
     assert rsync[1:7] == ("-a", "--checksum", "--delete", "--exclude", ".git", "--")
     assert rsync[-2:] == (str(project) + "/", "beep:/srv/tgent/uploads/incoming/upload-1/")
@@ -60,7 +60,7 @@ def test_continuation_pushes_recorded_base_and_transfers_again(tmp_path, monkeyp
     adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", "/srv/tgent"), client=client)
     adapter.continue_agent("agent-1", [{"role": "user", "content": "continue"}], project_root=project)
     assert [m["operation"] for m in client.messages] == ["status", "ensure_project", "prepare_upload", "finalize_upload", "continue"]
-    assert next(c for c in calls if "push" in c)[-1] == f"{base}:refs/agent-sync/{base}"
+    assert next(c for c in calls if "push" in c)[-2:] == ("+refs/*:refs/*", f"{base}:refs/agent-sync/{base}")
     assert any(c[0] == "rsync" for c in calls)
     assert client.messages[-1]["upload_id"] == client.messages[2]["upload_id"]
 
