@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 import inspect
 import json
 import logging
-import mailbox
 import os
 import secrets
 import re
@@ -110,7 +109,7 @@ class RemoteAgentService:
             state_root=str(config.state_dir),
             snapshot_root=str(config.snapshots_dir),
             model_callback=self._get_llm().model_callback,
-            patch_submit_callback=self._submit_patch,
+            patch_submit_callback=self._submit_patch_from_controller,
             runtime_layout=self.runtime_manifest.layout,
             runtime_version=self.runtime_manifest.version,
             runtime_app_path=str(config.remote_base_dir / "app"),
@@ -118,6 +117,7 @@ class RemoteAgentService:
             max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
             max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
+        self.controller.remote_git_submission = True
         self.handlers = build_async_operation_handlers(
             self.uploads,
             start_agent=self._start_agent,
@@ -135,6 +135,7 @@ class RemoteAgentService:
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "nack_patch": self._nack_patch,
                 "patches": self._patches,
+                "submit_patch": self._submit_patch_protocol,
                 "pending_patches": self._pending_patches,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
@@ -190,67 +191,97 @@ class RemoteAgentService:
             self._llm = LLMClient(os.environ.get("TGIT_AGENT_LLM_CONFIG", "config.toml"))
         return self._llm
 
+    async def _submit_patch_from_controller(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:
+        """Use the authoritative controller registration to resolve the work repo."""
+        agent_id = params["agent_id"]
+        metadata = self.controller.store.get_metadata(agent_id)
+        if Path(metadata["snapshot_project"]).resolve() != Path(snapshot.project_root).resolve():
+            raise RuntimeError("Submission snapshot does not match registered agent work repository")
+        request = {**params, "agent_id": agent_id}
+        return await self._submit_patch_request(request)
+
+    async def _submit_patch_protocol(self, request: dict[str, Any]) -> dict[str, Any]:
+        agent_id = request["agent_id"]
+        metadata = self.controller.store.get_metadata(agent_id)
+        head = request["head_commit"]
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
+            raise RuntimeError("head_commit must be a full object id")
+        if metadata.get("base_commit") != request["base_commit"]:
+            raise RuntimeError("base_commit does not match registered agent")
+        snapshot_path = Path(metadata["snapshot_project"])
+        snapshot_root = Path(metadata["snapshot_root"])
+        if snapshot_path.is_symlink() or snapshot_root.is_symlink() or snapshot_path.parent != snapshot_root:
+            raise RuntimeError("Unsafe service-managed agent work repository path")
+        snapshot = type("SubmissionSnapshot", (), {"root": snapshot_root, "project_root": snapshot_path, "base_commit": metadata["base_commit"]})()
+        # Do not permit the caller to supply source or destination: both derive
+        # solely from the registered agent and service project configuration.
+        request = {**request, "_project_mirror": metadata.get("project_mirror")}
+        return await self._submit_patch(snapshot, request)
+
+    async def _submit_patch_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Resolve submission source from controller-managed agent metadata."""
+        agent_id = request["agent_id"]
+        metadata = self.controller.store.get_metadata(agent_id)
+        snapshot_path = Path(metadata["snapshot_project"])
+        snapshot_root = Path(metadata["snapshot_root"])
+        if snapshot_path.is_symlink() or snapshot_root.is_symlink() or snapshot_path.parent != snapshot_root:
+            raise RuntimeError("Unsafe service-managed agent work repository path")
+        snapshot = type("SubmissionSnapshot", (), {
+            "root": snapshot_root, "project_root": snapshot_path,
+            "base_commit": metadata["base_commit"],
+        })()
+        request = {**request, "_project_mirror": metadata.get("project_mirror")}
+        return await self._submit_patch(snapshot, request)
+
     async def _submit_patch(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:
-        # Local review state and Maildir do not exist on the remote service.
-        # Generate an mbox artifact directly; local import creates its series.
-        exported = await asyncio.to_thread(
-            subprocess.run,
-            ("git", "-C", str(snapshot.project_root), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{snapshot.base_commit}..{params['head_commit']}"),
-            check=True, capture_output=True, timeout=60,
-        )
-        patch_bytes = exported.stdout
-        if not patch_bytes.strip():
-            raise RuntimeError("Patch export produced an empty mbox")
-        from mcp_tgit_review import _body, _parse_mbox, _serialize_mbox
-        reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
-        if not reply_to or "\\n" in reply_to or "\\r" in reply_to:
-            raise RuntimeError("Could not set patch Reply-To headers: Reply-To must be a valid single-line identity")
+        """Publish a submitted commit into the project bare mirror."""
+        agent_id = params["agent_id"]
+        identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
+        ref = f"refs/agent-submissions/{identity}"
+        mirror_value = params.get("_project_mirror")
+        if not isinstance(mirror_value, str):
+            raise RuntimeError("Agent has no registered project mirror")
+        mirror = Path(mirror_value)
+        if mirror.parent != Path(str(self.config.project_root_dir)):
+            raise RuntimeError("Registered project mirror is outside the managed project directory")
+        metadata_dir = Path(str(self.config.state_dir)) / "submissions"
+        _managed_directory(metadata_dir)
+        metadata_path = metadata_dir / f"{identity}.json"
+        metadata = {"agent_id": agent_id, "submission_id": agent_id, "commit_id": params["head_commit"],
+                    "base": params["base_commit"], "cover_letter_message": params["cover_letter_message"], "ref": ref}
+        if metadata_path.exists():
+            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if previous != metadata:
+                raise RuntimeError("Conflicting metadata for immutable submission ref")
+        source = Path(snapshot.project_root)
+        if source.is_symlink() or not source.is_dir() or not mirror.is_dir() or mirror.is_symlink():
+            raise RuntimeError("Unsafe agent repository or project mirror")
         try:
-            messages = _parse_mbox(patch_bytes)
-            patch_count = len(messages) - 1
-            if patch_count < 1:
-                raise ValueError("Generated mbox contains no patches")
-            subjects = subprocess.run(
-                ("git", "-C", str(snapshot.project_root), "log", "--no-merges", "--format=%s", "--reverse", f"{snapshot.base_commit}..{params['head_commit']}"),
-                check=True, capture_output=True, text=True, timeout=60,
-            ).stdout
-            commit_subjects = [line.strip() for line in subjects.splitlines() if line.strip()]
-            summary = "; ".join(commit_subjects[:3])
-            if len(commit_subjects) > 3:
-                summary += f"; and {len(commit_subjects) - 3} more"
-            summary = summary or f"{patch_count} patch series"
-            cover = messages[0]
-            cover.replace_header("Subject", f"[PATCH 0/{patch_count}] {summary}")
-            body = _body(cover)
-            history_summary = self.controller.store.get_cached_summary(snapshot.root.name)
-            blurb = history_summary or f"This series contains {patch_count} {'patch' if patch_count == 1 else 'patches'}: {summary}."
-            body = body.replace("*** BLURB HERE ***", blurb, 1)
-            cover.set_content(body)
-            for message in messages:
-                if message.get("Reply-To"):
-                    message.replace_header("Reply-To", reply_to)
-                else:
-                    message["Reply-To"] = reply_to
-            patch_bytes = _serialize_mbox(messages)
-        except (ValueError, OSError, mailbox.Error, subprocess.CalledProcessError) as err:
-            raise RuntimeError(f"Could not customize patch cover letter: {err}") from err
-        result = {"status": "ok", "base": snapshot.base_commit, "head": params["head_commit"]}
-        if len(patch_bytes) > 16 * 1024 * 1024:
-            raise RuntimeError("Patch artifact exceeds 16 MiB limit")
-        artifact_name = f"{snapshot.root.name}.patch"
-        artifact_path = Path(str(self.config.patches_dir)) / artifact_name
-        temporary_path = artifact_path.with_suffix(".patch.tmp")
-        descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(patch_bytes)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary_path, artifact_path)
+            existing = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", ref),
+                                      capture_output=True, text=True)
+            if existing.returncode == 0:
+                existing_oid = existing.stdout.strip()
+                wanted = params["head_commit"].lower()
+                if existing_oid.lower() != wanted:
+                    raise RuntimeError("Submission ref is already occupied by a different commit")
+            # Always fetch, including identical retries. Fetch updates the
+            # internally generated ref only after successful object transfer.
+            await asyncio.to_thread(subprocess.run,
+                ("git", "--git-dir", str(mirror), "fetch", "--no-tags", str(source),
+                 f"{params['head_commit']}:{ref}"), check=True, capture_output=True, timeout=60)
+            temporary = metadata_path.with_name(f".{metadata_path.name}.{secrets.token_hex(8)}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(metadata, stream, ensure_ascii=False, sort_keys=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, metadata_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return {"status": "ok", **metadata}
         except BaseException:
-            temporary_path.unlink(missing_ok=True)
             raise
-        return {**result, "patch_artifact": artifact_name, "patch_bytes": len(patch_bytes), "patch_sha256": __import__("hashlib").sha256(patch_bytes).hexdigest()}
 
     def _repository(self, name):
         if not isinstance(name, str) or not name.startswith("_") or name in {"_", "_.."} or "/" in name or "\x00" in name:

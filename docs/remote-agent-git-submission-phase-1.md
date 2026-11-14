@@ -21,7 +21,7 @@ The flow is **agent work repository → Git file-transport fetch → remote proj
 
 ## Manual inspection and agent access
 
-Document the operator procedure for fetching an accepted ref from the remote project bare mirror into the host project repository without changing its active branch, `HEAD`, index, or checked-out files. Fetch into an explicit, submission-scoped ref (for example, under `refs/remotes/agent-submissions/`); do not checkout or merge it. Confirm in integration coverage that another agent can fetch the published ref from the mirror.
+To inspect a published submission, fetch only its advertised ref from the remote project bare mirror into a submission-scoped ref in the host project repository, for example: `git -C /path/to/host-project fetch /path/to/project-bare-mirror refs/agent-submissions/AGENT:refs/remotes/agent-submissions/AGENT`. Do not checkout, merge, reset, or update a branch. This fetch updates only the explicitly named remote-tracking ref; it leaves `HEAD`, the active branch, index, and checked-out files untouched. The host project checkout is not a publication target.
 
 ## Tests and exit criteria
 

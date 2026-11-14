@@ -113,8 +113,8 @@ TOOLS: list[dict[str, Any]] = [
             "description": "Submit committed snapshot changes for review. Use the full current HEAD commit hash.",
             "parameters": {
                 "type": "object",
-                "properties": {"head_commit": {"type": "string"}},
-                "required": ["head_commit"],
+                "properties": {"head_commit": {"type": "string"}, "cover_letter_message": {"type": "string", "maxLength": 65536}},
+                "required": ["head_commit", "cover_letter_message"],
                 "additionalProperties": False,
             },
         },
@@ -606,10 +606,13 @@ class AgentWorker:
             return await _run_command(self.root, arguments)
         if name == "submit_patch_queue":
             head = arguments.get("head_commit")
+            cover_letter_message = arguments.get("cover_letter_message")
             if not isinstance(head, str) or not head:
                 raise WorkerError("head_commit must be a non-empty string")
+            if not isinstance(cover_letter_message, str) or len(cover_letter_message) > 65536:
+                raise WorkerError("cover_letter_message must be bounded text")
             result = await self.client.request(
-                "patch.submit", {"base_commit": os.environ.get("AGENT_BASE_COMMIT"), "head_commit": head}
+                "patch.submit", {"base_commit": os.environ.get("AGENT_BASE_COMMIT"), "head_commit": head, "cover_letter_message": cover_letter_message}
             )
             return result
         raise WorkerError(f"Unknown tool: {name}")

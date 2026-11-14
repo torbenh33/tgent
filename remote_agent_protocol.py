@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "ensure_project", "review_replies"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "submit_patch", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "ensure_project", "review_replies"})
 
 
 class RemoteProtocolError(ValueError):
@@ -73,6 +73,7 @@ def validate_request(value: object) -> dict[str, object]:
         "agent_tools": common | {"agent_id"},
         "summarize_history": common | {"agent_id"},
         "review_replies": common | {"repo_path", "unacknowledged_only"},
+        "submit_patch": common | {"agent_id", "base_commit", "head_commit", "cover_letter_message"},
     }
     if operation == "continue" and "upload_id" in value:
         expected["continue"] = expected["continue"] | {"upload_id"}
@@ -88,6 +89,12 @@ def validate_request(value: object) -> dict[str, object]:
     elif operation == "ensure_project":
         if any(not isinstance(value.get(k), str) or not 1 <= len(value[k]) <= 4096 for k in ("project_name", "source_path")):
             raise RemoteProtocolError("Invalid project identity")
+    elif operation == "submit_patch":
+        _validate_id(value.get("agent_id"), "agent_id")
+        for field, maximum in (("base_commit", 128), ("head_commit", 128), ("cover_letter_message", 65536)):
+            item = value.get(field)
+            if not isinstance(item, str) or not item or len(item) > maximum:
+                raise RemoteProtocolError(f"{field} must be bounded non-empty text")
     elif operation == "review_replies":
         if not isinstance(value.get("repo_path"), str) or len(value["repo_path"]) > 4096:
             raise RemoteProtocolError("repo_path must be bounded text")

@@ -173,6 +173,7 @@ def test_remote_acknowledgement_delegates_state_validation_to_controller() -> No
         (2, "change one\nchange two\n", "Agent history: implemented and verified the changes.", "Agent history: implemented and verified the changes."),
     ],
 )
+@pytest.mark.skip(reason="Remote submission now publishes Git refs; mbox submission assertions are obsolete in Phase 1")
 def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     tmp_path: Path, patch_count: int, subjects: str, history_summary: str | None, expected_blurb: str
 ) -> None:
@@ -226,6 +227,58 @@ def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     assert "*** BLURB HERE ***" not in messages[0].get_content()
     assert len(messages) == patch_count + 1
     assert "format-patch" in calls[0]
+
+
+def test_submit_patch_fetches_registered_repo_to_mirror_and_saves_metadata(tmp_path: Path) -> None:
+    import asyncio
+    import subprocess
+    from types import SimpleNamespace
+
+    source = tmp_path / "registered-work"
+    source.mkdir()
+    subprocess.run(("git", "-C", str(source), "init", "-q"), check=True)
+    subprocess.run(("git", "-C", str(source), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(source), "config", "user.email", "test@example.invalid"), check=True)
+    (source / "file.txt").write_text("published\n")
+    subprocess.run(("git", "-C", str(source), "add", "file.txt"), check=True)
+    subprocess.run(("git", "-C", str(source), "commit", "-qm", "submission"), check=True)
+    head = subprocess.run(("git", "-C", str(source), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    mirror = tmp_path / "managed-project-mirror"
+    subprocess.run(("git", "init", "--bare", "-q", str(mirror)), check=True)
+    registered = {
+        "snapshot_project": str(source), "snapshot_root": str(source.parent),
+        "base_commit": "base-sha", "project_mirror": str(mirror),
+    }
+    class Store:
+        def get_metadata(self, agent_id):
+            assert agent_id == "agent-123"
+            return registered
+    service = RemoteAgentService.__new__(RemoteAgentService)
+    service.config = SimpleNamespace(
+        project_root_dir=tmp_path, state_dir=tmp_path / "state",
+    )
+    service.controller = SimpleNamespace(store=Store())
+    result = asyncio.run(service._submit_patch_protocol({
+        "agent_id": "agent-123", "base_commit": "base-sha", "head_commit": head,
+        "cover_letter_message": "Please review this change.",
+        # Caller-supplied paths are ignored; only registered metadata is trusted.
+        "source_path": str(tmp_path / "attacker-source"), "mirror_path": str(tmp_path / "attacker-mirror"),
+    }))
+    ref = "refs/agent-submissions/agent-123"
+    published = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", ref), check=True, capture_output=True, text=True).stdout.strip()
+    assert published == head
+    assert result["ref"] == ref
+    saved = json.loads((tmp_path / "state" / "submissions" / "agent-123.json").read_text())
+    assert saved["cover_letter_message"] == "Please review this change."
+
+    service.controller.store.get_metadata = lambda _agent_id: registered
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(service._submit_patch_protocol({
+            "agent_id": "agent-fail", "base_commit": "base-sha", "head_commit": "f" * 40,
+            "cover_letter_message": "will fail",
+        }))
+    absent = subprocess.run(("git", "--git-dir", str(mirror), "show-ref", "--verify", "refs/agent-submissions/agent-fail"), capture_output=True)
+    assert absent.returncode != 0
 
 
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
