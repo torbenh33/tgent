@@ -1,12 +1,12 @@
 # Reviewing remote agent patches
 
-Remote agents work in isolated Git snapshots. When an agent submits its committed changes, the remote service saves a bounded patch-series artifact. In remote mode, `review_remote_agent` retrieves that artifact, validates it, and imports it into the local `mcp_tgit_review` store. You can then review and reply using the same mail-based workflow as other patch series.
+Remote agents work in isolated Git snapshots. When an agent submits committed changes, the remote service saves a bounded patch-series artifact. In remote mode, `review_remote_agent` retrieves and validates it, then imports the reconstructed commits into the existing project repository (the agent's `origin`) under `refs/agent-submissions/<series-id>/<artifact-sha256>`. The submitted SHA thus resolves in that shared repository, without creating another repository, updating main, or pushing upstream. This import is performed by the trusted host-side review processor; agents have no write access to the shared repository. The patch series is also recorded in the local `mcp_tgit_review` store.
 
 ## Before you start
 
 - Configure and start the agent MCP server in **remote mode**, with access to the project repository and its `mcp_tgit_review` tools. `review_remote_agent` is not available in local mode.
 - Configure the review mail setup described by `mcp_tgit_review.py` (including its private review state/Maildir and reply address) and make sure incoming replies are captured by the review server. Set `TGIT_REVIEW_REPLY_TO` to the address reviewers should reply to.
-- Keep the project repository available locally. Import verifies the declared base commit and applies the mbox patches in a temporary clone; it does not apply them to your active checkout.
+- Keep the existing shared project repository available and writable by the trusted host-side import processor. Import verifies the declared base and applies the mbox patches in a temporary clone. The trusted processor then imports validated commits to the same repository using a submission-specific ref; it does not update branches or the active checkout. The remote service's per-project bare repository is only the agents' read-only object reference, not a second host-side review repository.
 
 ## Submit and import a review
 
