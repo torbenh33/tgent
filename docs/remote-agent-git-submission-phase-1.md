@@ -17,7 +17,7 @@ The flow is **agent work repository → Git file-transport fetch → remote proj
 3. Phase 1 performs no additional checks of the submitted commit, ancestry, base, connectivity, or gitlinks. A successful fetch is the submission operation. A failed fetch must not leave a published submission ref.
 4. Store submission metadata/provenance: agent and submission identity, supplied commit ID and base, cover-letter message, and published ref. Retrying the same agent, submission identity, commit ID, and cover-letter message is idempotent; conflicting metadata for an occupied immutable ref is an error.
 5. Keep the existing pending-patch retrieval APIs, adapter methods, and review callers unchanged. Since submission no longer creates `.patch` artifacts, these existing flows are expected not to retrieve/review new Git submissions until Phase 2. Do not remove these APIs or add a replacement retrieval path in this phase.
-6. Leave local-agent submission and local mbox review unchanged. Submission must not modify the host project repository.
+6. Route local and remote controller submissions through the same Git-fetch publication path into the managed bare mirror; do not preserve a separate local mbox submission path. Local setup without a managed bare mirror may fail to submit until it is provisioned with one. Submission must not modify the host project repository.
 
 ## Manual inspection and agent access
 

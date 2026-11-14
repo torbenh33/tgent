@@ -117,7 +117,6 @@ class RemoteAgentService:
             max_model_calls=int(os.environ.get("TGIT_AGENT_MAX_MODEL_CALLS", "200")),
             max_runtime_seconds=int(os.environ.get("TGIT_AGENT_MAX_RUNTIME_SECONDS", "43200")),
         )
-        self.controller.remote_git_submission = True
         self.handlers = build_async_operation_handlers(
             self.uploads,
             start_agent=self._start_agent,

@@ -561,24 +561,23 @@ class AgentController:
         snapshot = self._runtimes[agent_id].snapshot
         base = params.get("base_commit")
         head = params.get("head_commit")
-        remote_submission = bool(getattr(self, "remote_git_submission", False))
-        if (not remote_submission and base != snapshot.base_commit) or not isinstance(head, str) or _COMMIT_RE.fullmatch(head) is None:
+        if base != snapshot.base_commit or not isinstance(head, str) or _COMMIT_RE.fullmatch(head) is None:
             raise AgentControllerError("Patch request must identify the recorded base commit and a full commit hash")
-        resolved = None if remote_submission else await asyncio.create_subprocess_exec(
+        resolved = await asyncio.create_subprocess_exec(
             "git", "-C", str(snapshot.project_root), "rev-parse", "--verify", "--end-of-options", f"{head}^{{commit}}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        resolved_out, resolved_err = (b"", b"") if resolved is None else await resolved.communicate()
-        if resolved is not None and (resolved.returncode != 0 or resolved_out.decode().strip().lower() != head.lower()):
+        resolved_out, resolved_err = await resolved.communicate()
+        if resolved.returncode != 0 or resolved_out.decode().strip().lower() != head.lower():
             raise AgentControllerError(f"Patch head does not resolve to a commit in the snapshot: {resolved_err.decode(errors='replace')}")
-        check = None if remote_submission else await asyncio.create_subprocess_exec(
+        check = await asyncio.create_subprocess_exec(
             "git", "-C", str(snapshot.project_root), "merge-base", "--is-ancestor", base, head,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _stdout, stderr = (b"", b"") if check is None else await check.communicate()
-        if check is not None and check.returncode != 0:
+        _stdout, stderr = await check.communicate()
+        if check.returncode != 0:
             raise AgentControllerError(f"Patch head is not based on the recorded base commit: {stderr.decode(errors='replace')}")
         result = self.patch_submit_callback(snapshot, {**params, "agent_id": agent_id})
         if inspect.isawaitable(result):

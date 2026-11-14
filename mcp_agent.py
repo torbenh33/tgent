@@ -43,21 +43,11 @@ def _get_llm() -> LLMClient:
 
 
 async def _submit_patch(snapshot: Any, params: dict[str, Any]) -> dict[str, Any]:
-    """Use the existing review MCP implementation to export snapshot commits."""
-    module = importlib.import_module("mcp_tgit_review")
-    export = getattr(module, "export_patch_series", None)
-    if not callable(export):
-        raise RuntimeError("mcp_tgit_review.export_patch_series is unavailable")
-    result = await asyncio.to_thread(
-        export,
-        base=snapshot.base_commit,
-        head=params["head_commit"],
-        repo_path=str(snapshot.project_root),
-        agent_history_summary=await summarize_agent_history(params["agent_id"]),
+    """Local submissions require the managed bare-mirror service path."""
+    raise RuntimeError(
+        "Local submission is unavailable until this setup has a managed bare mirror; "
+        "submission never falls back to mbox export."
     )
-    if not isinstance(result, dict) or result.get("status") != "ok":
-        raise RuntimeError(f"Patch queue export failed: {result}")
-    return result
 
 def _remote_adapter() -> RemoteAgentAdapter | None:
     """Load remote deployment settings only when remote mode is enabled."""
