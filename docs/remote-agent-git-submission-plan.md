@@ -57,12 +57,15 @@ Make each phase a focused, reviewable change that replaces one part of the old p
 
 Implementation details, tests, and manual inspection procedure are in [the Phase 1 implementation brief](remote-agent-git-submission-phase-1.md). Keep this phase focused: replace the remote submission operation with Git publication, leave existing pending-patch retrieval/review APIs and callers unchanged (they will not retrieve new submissions until Phase 2), and do not change local-agent submission or local mbox review.
 
-### Phase 2: Generate review mbox on pending-submission retrieval
+### Phase 2: Unify local submission and generate review mbox on retrieval
 
-- Change the pending-submission retrieval path to read accepted Git refs and provenance from the remote project bare mirror, then generate the mbox needed by the existing mail-based review workflow at retrieval time.
-- Include the submitted cover-letter message in the generated series. Keep generated mbox data as a compatibility/review representation, not as the submission transport or source of truth.
+Implementation details and tests are in [the Phase 2 implementation brief](remote-agent-git-submission-phase-2.md).
+
+- Configure local-agent sessions with the managed remote project bare mirror and service-recorded work-repository paths. Remove the separate local mbox-export submission branch so local and remote submissions use the same Git fetch/publication implementation and metadata format.
+- Change pending-submission retrieval to read published Git refs from the remote project bare mirror and cover-letter/provenance records from service-managed submission metadata, then generate the mbox needed by the existing mail-based review workflow at retrieval time.
+- Include the submitted cover-letter message in the generated series. Keep generated mbox data as a compatibility/review representation, not as submission transport or source of truth.
 - Preserve the existing review import, Maildir, notification, and reply behavior where possible; keep locally authored mbox-series review unchanged.
-- **Exit criteria:** single and bulk pending-submission flows generate reviewable mboxes from published refs, preserve cover-letter content and provenance, and retain existing mail/reply semantics. Tests cover missing refs, invalid metadata, retry/idempotence, and failure behavior.
+- **Exit criteria:** local and remote submissions use one Git publication codepath and the same managed mirror. Single and bulk pending-submission flows generate reviewable mboxes from published refs, preserve cover-letter content/provenance, and retain existing mail/reply semantics. Tests cover missing refs, invalid metadata, retry/idempotence, and failure behavior.
 
 ### Phase 3: Add or adapt Git-based mail events, if needed
 
