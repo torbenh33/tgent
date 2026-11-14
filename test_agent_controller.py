@@ -366,6 +366,48 @@ async def test_continue_inactive_agent_starts_child_from_snapshot(tmp_path, stat
 
 
 @pytest.mark.anyio
+async def test_continue_reconciles_pending_operator_call_durably_and_once(tmp_path) -> None:
+    call_id = "call-ask-1"
+    history = [
+        {"role": "user", "content": "do task"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": call_id, "type": "function", "function": {"name": "ask_operator", "arguments": "{\\\"message\\\":\\\"need input\\\"}"}
+        }]},
+    ]
+    metadata = {"agent_id": "old", "state": "stopped", "stop_reason": "awaiting_command",
+                "operator_question": "need input", "operator_response": None,
+                "snapshot_root": str(tmp_path / "snapshots" / "old"),
+                "snapshot_project": str(tmp_path / "snapshots" / "old" / "project"),
+                "name": "Original", "model": "model", "reasoning_effort": "none"}
+    class Store:
+        def get_metadata(self, _id): return dict(metadata)
+        def get_history(self, _id): return list(history)
+        def update_metadata(self, _id, values): metadata.update(values); return dict(metadata)
+        def append_history(self, _id, values): history.extend(values); return list(history)
+    snapshot_project = Path(metadata["snapshot_project"])
+    snapshot_project.mkdir(parents=True)
+    controller = AgentController.__new__(AgentController)
+    controller.store = Store()
+    controller.snapshot_root = tmp_path / "snapshots"
+    controller._runtimes = {}
+    calls = []
+    async def start(request, *, source_root=None, **kwargs):
+        calls.append(request)
+        return {"status": "ok", "agent_id": f"new{len(calls)}", "state": "running"}
+    controller.start_agent = start
+
+    await controller.continue_agent("old", [{"role": "user", "content": "operator said yes"}])
+    assert history[-1] == {"role": "tool", "tool_call_id": call_id,
+                           "content": '{"response": "operator said yes"}'}
+    assert calls[0]["history"] == history
+    # Simulate retry after recovery; do not append the answer or its tool result again.
+    metadata.update(state="stopped", operator_question="need input")
+    await controller.continue_agent("old", [{"role": "user", "content": "different retry text"}])
+    assert len([m for m in history if m.get("tool_call_id") == call_id]) == 1
+    assert calls[1]["history"] == history
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("state", ["starting", "running", "stopping", "failed", "reaped"])
 async def test_continue_rejects_noncontinuable_lifecycle_states(state: str) -> None:
     class Store:
