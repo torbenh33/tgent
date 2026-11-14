@@ -414,10 +414,11 @@ def import_patch_series(
     artifact_sha256: str,
     paths: ReviewPaths = DEFAULT_PATHS,
 ) -> dict[str, Any]:
-    """Validate and import a complete remote mbox into the normal review store.
+    """Validate and import a complete remote mbox into the review store.
 
-    The supplied cover letter is retained verbatim (and is therefore authored
-    by the remote agent); patch Message-IDs are not regenerated.
+    Reconstructed commits are added to the existing repository under an
+    immutable artifact-specific ref; no branch or active checkout is changed.
+    The supplied cover letter is retained verbatim and patch Message-IDs are not regenerated.
     """
     if len(raw) > 16 * 1024 * 1024:
         return {"status": "error", "message": "Mbox exceeds 16 MiB limit."}
@@ -459,6 +460,20 @@ def import_patch_series(
         reconstructed = _git(str(clone), ["rev-parse", "HEAD"])
         if reconstructed.returncode or reconstructed.stdout.strip() == base_sha:
             return {"status": "error", "message": "Mbox produced no reconstructed commits."}
+        imported_head = reconstructed.stdout.strip()
+        namespace = f"refs/agent-submissions/{series_id}/revision-{artifact_sha256}"
+        existing = _git(repo, ["show-ref", "--verify", "--hash", namespace])
+        if existing.returncode == 0:
+            if existing.stdout.strip() != imported_head:
+                return {"status": "error", "message": "Submission ref already exists with different content."}
+        else:
+            source_ref = f"refs/agent-import/{artifact_sha256}"
+            source_update = _git(str(clone), ["update-ref", source_ref, imported_head])
+            if source_update.returncode:
+                return {"status": "error", "message": "Could not prepare validated submission objects."}
+            fetched = subprocess.run(["git", "-C", repo, "fetch", "--quiet", str(clone), f"{source_ref}:{namespace}"], capture_output=True)
+            if fetched.returncode:
+                return {"status": "error", "message": "Could not import validated submission objects."}
     _state_dirs(paths)
     manifest, manifest_path = _load_manifest(series_id, paths)
     if manifest is None:
