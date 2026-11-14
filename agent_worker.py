@@ -30,6 +30,7 @@ MAX_CHILD_MODEL_CALLS = 12
 MAX_CHILD_TASK_CHARS = 20_000
 
 TOOLS: list[dict[str, Any]] = [
+    {"type": "function", "function": {"name": "ask_operator", "description": "Ask the operator a question and wait for their response. The operator can find your question in agent status and respond with continue_agent.", "parameters": {"type": "object", "properties": {"message": {"type": "string", "minLength": 1}}, "required": ["message"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "delegate_context_task", "description": "Run a bounded one-level task against a conversation snapshot; returns text without changing parent history.", "parameters": {"type": "object", "properties": {"task": {"type": "string", "minLength": 1, "maxLength": MAX_CHILD_TASK_CHARS}}, "required": ["task"], "additionalProperties": False}}},
     {
         "type": "function",
@@ -585,6 +586,12 @@ class AgentWorker:
         raise WorkerError(f"Child exceeded {MAX_CHILD_MODEL_CALLS} model calls")
 
     async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name == "ask_operator":
+            message = arguments.get("message")
+            if not isinstance(message, str) or not message.strip():
+                raise WorkerError("message must be a non-empty string")
+            result = await self.client.request("agent.ask_operator", {"message": message})
+            return result.get("response", "") if isinstance(result, dict) else result
         if name == "delegate_context_task":
             return await self._run_child(arguments.get("task"))
         if name in self.dynamic_tools:

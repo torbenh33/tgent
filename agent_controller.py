@@ -345,6 +345,7 @@ class AgentController:
                 "agent.update_state": self._handler(agent_id, self._update_state),
                 "patch.submit": self._handler(agent_id, self._submit_patch),
                 "agent.await_command": self._handler(agent_id, self._await_command),
+                "agent.ask_operator": self._handler(agent_id, self._ask_operator),
                 "agent.tools.get": self._handler(agent_id, self._get_tool_allowlist),
                 "agent.tools.report": self._handler(agent_id, self._report_tool_catalog),
             }
@@ -583,6 +584,24 @@ class AgentController:
             result = await result
         self.store.update_metadata(agent_id, {"state": "awaiting_review", "submitted_head": head})
         return result
+
+    async def _ask_operator(self, agent_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        message = params.get("message")
+        if not isinstance(message, str) or not message.strip() or len(message) > 20_000:
+            raise AgentControllerError("message must be a non-empty string of at most 20000 characters")
+        self.store.update_metadata(agent_id, {
+            "state": "halted", "stop_reason": "awaiting_command", "operator_question": message,
+            "operator_response": None,
+        })
+        runtime = self._runtimes[agent_id]
+        while True:
+            command = await runtime.commands.get()
+            if command.get("command") == "shutdown":
+                raise AgentControllerError("Worker is shutting down")
+            messages = command.get("messages", [])
+            response = "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
+            self.store.update_metadata(agent_id, {"operator_response": response, "operator_question": None, "state": "running", "stop_reason": None})
+            return {"response": response}
 
     async def _await_command(self, agent_id: str, params: dict[str, Any]) -> dict[str, Any]:
         timeout = params.get("timeout_seconds", 3600)
@@ -838,6 +857,11 @@ class AgentController:
         if not messages or any(not isinstance(message, dict) for message in messages):
             raise AgentControllerError("continue requires one or more message objects")
         runtime = self._runtimes.get(agent_id)
+        if (validate.get("stop_reason") == "awaiting_command" and runtime is not None
+                and runtime.process.returncode is None):
+            self.store.append_history(agent_id, messages)
+            await runtime.commands.put({"command": "review_feedback", "messages": messages})
+            return {"agent_id": agent_id, "state": "review_received", "queued_messages": len(messages)}
         if runtime is None or runtime.process.returncode is not None:
             # Stopped is an operator-requested termination (or controller shutdown),
             # while halted is a worker's natural completion. Both are recoverable
