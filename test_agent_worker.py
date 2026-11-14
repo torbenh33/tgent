@@ -23,6 +23,45 @@ def test_system_prompt_prioritizes_mcp_pytest_and_project_venv() -> None:
     assert "replace pytest with unittest" in prompt
 
 
+def test_submit_patch_queue_requires_committed_head_with_actionable_feedback() -> None:
+    class Client:
+        async def request(self, method, params):
+            raise AssertionError("submission must not be attempted without a HEAD")
+
+    worker = AgentWorker(Client(), Path("."), "agent")  # type: ignore[arg-type]
+
+    with pytest.raises(WorkerError) as error:
+        asyncio.run(worker._execute_tool("submit_patch_queue", {"head_commit": " ", "cover_letter_message": ""}))
+
+    message = str(error.value)
+    assert "Commit your intended changes first" in message
+    assert "full current HEAD commit hash" in message
+    assert "safe and expected" in message
+    assert "private isolated repository" in message
+    assert "does not commit to the operator's repository" in message
+
+
+def test_submit_patch_queue_forwards_valid_committed_head() -> None:
+    head = "a" * 40
+
+    class Client:
+        requests = []
+
+        async def request(self, method, params):
+            self.requests.append((method, params))
+            return {"status": "ok"}
+
+    client = Client()
+    worker = AgentWorker(client, Path("."), "agent")  # type: ignore[arg-type]
+
+    result = asyncio.run(worker._execute_tool("submit_patch_queue", {"head_commit": head, "cover_letter_message": "review"}))
+
+    assert result == {"status": "ok"}
+    assert client.requests[0][0] == "patch.submit"
+    assert client.requests[0][1]["head_commit"] == head
+    assert "commit your intended changes" in SYSTEM_PROMPT
+
+
 def test_read_file_returns_requested_one_based_lines(tmp_path: Path) -> None:
     (tmp_path / "example.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
 

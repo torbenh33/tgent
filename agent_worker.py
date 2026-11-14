@@ -110,7 +110,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "submit_patch_queue",
-            "description": "Submit committed snapshot changes for review. Use the full current HEAD commit hash.",
+            "description": "Submit committed snapshot changes for review. Commit your intended changes first, then use the full current HEAD commit hash. Committing is safe and expected in this private isolated repository; it does not commit to the operator's repository.",
             "parameters": {
                 "type": "object",
                 "properties": {"head_commit": {"type": "string"}, "cover_letter_message": {"type": "string", "maxLength": 65536}},
@@ -142,7 +142,7 @@ report what you checked and what remains uncertain.
 
 Use tools to inspect and change files, run tests, and commit your work in the snapshot.
 Do not claim changes are applied to the main checkout. When a coherent committed
-patch is ready, call submit_patch_queue with its HEAD commit. After submission,
+patch is ready, commit your intended changes in this private isolated repository (this does not commit to the operator's repository), then call submit_patch_queue with the full committed HEAD hash. If submission reports no valid committed changes, commit first and retry with HEAD. After submission,
 wait for review feedback; address it as a new revision when received. You may
 finish a turn without tools; that halts the agent for inspection. If asked to
 list your tools without using them, report the exact names from the Available tools
@@ -607,8 +607,11 @@ class AgentWorker:
         if name == "submit_patch_queue":
             head = arguments.get("head_commit")
             cover_letter_message = arguments.get("cover_letter_message")
-            if not isinstance(head, str) or not head:
-                raise WorkerError("head_commit must be a non-empty string")
+            if not isinstance(head, str) or not head.strip():
+                raise WorkerError(
+                    "No committed HEAD was provided. Commit your intended changes first, then submit the full current HEAD commit hash. "
+                    "Committing is safe and expected in this private isolated repository; it does not commit to the operator's repository."
+                )
             if not isinstance(cover_letter_message, str) or len(cover_letter_message) > 65536:
                 raise WorkerError("cover_letter_message must be bounded text")
             result = await self.client.request(
