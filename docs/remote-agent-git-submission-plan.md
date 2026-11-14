@@ -50,14 +50,37 @@ In short: **agent work repository → fetch and validate → remote project bare
 - Preserve existing review mail/reply semantics and agent lifecycle acknowledgments unless separately changed by explicit decision.
 - Not in scope for this first step: submodules/gitlinks, arbitrary uncommitted working-tree changes, changing local-agent patch submission, upstream publication, automatic rebase/merge, mirror garbage collection, and redesigning email review itself.
 
-## Staged implementation sequence
+## Phased implementation plan
 
-1. **Approval and compatibility contract:** settle authenticated fetch-source resolution, commit/base/ref semantics, cover-letter format and bounds, retry identity, and review-mail compatibility. This plan makes no code change.
-2. **Submission API and fetch source:** change the submission request to include the exact commit ID and cover-letter message. Define how the trusted importer obtains the matching agent repository through service-controlled configuration; do not accept caller-selected remotes or paths.
-3. **Git fetch and validation:** replace `RemoteAgentService._submit_patch` mbox generation and the adapter's `.patch` retrieval path with an exact-commit fetch into a private staging ref in the remote project bare mirror. Validate ancestry, connectivity, metadata, bounds, and supported object types in place before publishing anything.
-4. **Submission publication and review import:** promote only validated staging refs to immutable submission refs in the remote project bare mirror so other agents can access accepted commits. Update `mcp_agent.review_remote_agent` and bulk review to consume those refs and preserve the cover-letter provenance. If review requires importing objects into `_PROJECT_ROOT`, do so separately without changing the host repository's active worktree or branches. Remove failed staging refs.
-5. **Review integration:** preserve operator-visible notifications and the existing mail workflow by producing a summary/review record from validated commits and the submitted cover-letter message. Remove mbox-specific remote storage/Message-ID assumptions only after compatibility behavior is agreed.
-6. **Cleanup and docs:** remove obsolete remote mbox generation/import code only once no caller depends on it; update `docs/remote-agent-review.md` and related protocol docs. Run full pytest.
+Make each phase a focused, reviewable change that replaces one part of the old path rather than maintaining parallel implementations. Avoid changing local-agent submission or the shared local mbox-review support. The first phase deliberately stops at Git publication and manual retrieval; it does not attempt to automate operator review or mail events.
+
+### Phase 1: Replace remote mbox submission with Git publication
+
+- Change the remote submission request to carry the exact commit ID, declared base, and explicit cover-letter message, with strict schema and size validation.
+- Replace remote mbox generation and `.patch` artifact storage with a trusted fetch from the authenticated agent work repository into a private staging ref in the remote project bare mirror.
+- Validate connectivity, exact commit identity, declared base ancestry/range, and absence of unsupported gitlinks in the remote project bare mirror. Remove the staging ref on failure; after validation, publish an immutable, submission-scoped ref and record the commit/base/cover-letter metadata.
+- Do not retain a parallel remote mbox submission path. For this interim phase, retire remote pending-patch artifact retrieval and automated remote mbox review; operators inspect submissions by manually fetching an accepted ref from the remote project bare mirror into the host project repository. Document a safe fetch procedure that does not change the host repository's active branch, `HEAD`, index, or checked-out files. Other agents can fetch the same published ref from the mirror. Local-agent submission and local mbox review remain unchanged.
+- **Exit criteria:** service/protocol and integration tests prove fetch-source selection is service-controlled, invalid submissions publish no submission ref, valid refs are available from the mirror, retries are safe, cover-letter metadata is retained, and the host project repository is unchanged. The manual fetch procedure is documented, and obsolete remote `.patch` generation, storage, and artifact-retrieval code is removed rather than left as a parallel path.
+
+### Phase 2: Generate review mbox on pending-submission retrieval
+
+- Change the pending-submission retrieval path to read accepted Git refs and provenance from the remote project bare mirror, then generate the mbox needed by the existing mail-based review workflow at retrieval time.
+- Include the submitted cover-letter message in the generated series. Keep generated mbox data as a compatibility/review representation, not as the submission transport or source of truth.
+- Preserve the existing review import, Maildir, notification, and reply behavior where possible; keep locally authored mbox-series review unchanged.
+- **Exit criteria:** single and bulk pending-submission flows generate reviewable mboxes from published refs, preserve cover-letter content and provenance, and retain existing mail/reply semantics. Tests cover missing refs, invalid metadata, retry/idempotence, and failure behavior.
+
+### Phase 3: Add or adapt Git-based mail events, if needed
+
+- Only after Phase 2 is working, decide whether mail events should be generated directly from Git submission metadata/ref state or continue to use the generated mbox review representation.
+- Implement the chosen event behavior without restoring mbox generation to the submission operation or duplicating the submission lifecycle.
+- **Exit criteria:** event behavior and notification/reply compatibility are explicit, covered by focused tests, and do not affect Git publication or the host project's active checkout.
+
+### Phase 4: Finalize documentation and remove remaining obsolete code
+
+- Remove only remote artifact/Message-ID code proven unused after Phases 1–3; retain shared mbox support used for local review and any generated review mbox path still required for compatibility.
+- Update `docs/remote-agent-review.md`, protocol documentation, and tests to describe the implemented contract and the manual-fetch transition if it remains relevant.
+- Run focused service, protocol, integration, importer, review, and sandbox tests, followed by full pytest.
+- **Exit criteria:** there is one remote submission source of truth (Git refs and provenance), no remote submission caller depends on transferred `.patch` artifacts, local mbox review remains intact, and the complete test suite passes.
 
 ## Existing tests and assertions to revise
 
