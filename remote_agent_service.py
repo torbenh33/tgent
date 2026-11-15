@@ -234,58 +234,9 @@ class RemoteAgentService:
 
     async def _submit_patch(self, snapshot, params: dict[str, Any]) -> dict[str, Any]:
         """Publish a submitted commit into the project bare mirror."""
-        return await publish_submission({**params, "_work_repository": str(snapshot.project_root)}, state_dir=Path(str(self.config.state_dir)), project_root_dir=Path(str(self.config.project_root_dir)))
+        return publish_submission({**params, "_work_repository": str(snapshot.project_root)}, state_dir=Path(str(self.config.state_dir)), project_root_dir=Path(str(self.config.project_root_dir)))
 
 
-def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_dir: Path) -> dict[str, Any]:
-    """Fetch a registered commit to its immutable managed submission ref."""
-    agent_id = params["agent_id"]
-    identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
-    ref = f"refs/agent-submissions/{identity}"
-    mirror_value = params.get("_project_mirror")
-    if not isinstance(mirror_value, str):
-        raise RuntimeError("Agent has no registered project mirror")
-    mirror = Path(mirror_value)
-    if mirror.parent != project_root_dir:
-        raise RuntimeError("Registered project mirror is outside the managed project directory")
-    metadata_dir = state_dir / "submissions"
-    _managed_directory(metadata_dir)
-    metadata_path = metadata_dir / f"{identity}.json"
-    metadata = {"agent_id": agent_id, "submission_id": agent_id, "commit_id": params["head_commit"],
-                "base": params["base_commit"], "cover_letter_message": params["cover_letter_message"], "ref": ref}
-    if metadata_path.exists():
-        previous = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if previous != metadata:
-            raise RuntimeError("Conflicting metadata for immutable submission ref")
-    source = Path(params["_work_repository"])
-    if source.is_symlink() or not source.is_dir() or not mirror.is_dir() or mirror.is_symlink():
-        raise RuntimeError("Unsafe agent repository or project mirror")
-    try:
-        existing = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", ref),
-                                  capture_output=True, text=True)
-        if existing.returncode == 0:
-            existing_oid = existing.stdout.strip()
-            wanted = params["head_commit"].lower()
-            if existing_oid.lower() != wanted:
-                raise RuntimeError("Submission ref is already occupied by a different commit")
-        # Always fetch, including identical retries. Fetch updates the
-        # internally generated ref only after successful object transfer.
-        subprocess.run(
-            ["git", "--git-dir", str(mirror), "fetch", "--no-tags", str(source),
-             f"{params['head_commit']}:{ref}"], check=True, capture_output=True, timeout=60)
-        temporary = metadata_path.with_name(f".{metadata_path.name}.{secrets.token_hex(8)}.tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(metadata, stream, ensure_ascii=False, sort_keys=True)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, metadata_path)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return {"status": "ok", **metadata}
-    except BaseException:
-        raise
 
 
     def _repository(self, name):
@@ -516,6 +467,58 @@ def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_
             if self._service_lock_fd is not None:
                 os.close(self._service_lock_fd)
                 self._service_lock_fd = None
+
+
+
+def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_dir: Path) -> dict[str, Any]:
+    """Fetch a registered commit to its immutable managed submission ref."""
+    agent_id = params["agent_id"]
+    identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
+    ref = f"refs/agent-submissions/{identity}"
+    mirror_value = params.get("_project_mirror")
+    if not isinstance(mirror_value, str):
+        raise RuntimeError("Agent has no registered project mirror")
+    mirror = Path(mirror_value)
+    if mirror.parent != project_root_dir:
+        raise RuntimeError("Registered project mirror is outside the managed project directory")
+    metadata_dir = state_dir / "submissions"
+    _managed_directory(metadata_dir)
+    metadata_path = metadata_dir / f"{identity}.json"
+    metadata = {"agent_id": agent_id, "submission_id": agent_id, "commit_id": params["head_commit"],
+                "base": params["base_commit"], "cover_letter_message": params["cover_letter_message"], "ref": ref}
+    if metadata_path.exists():
+        previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if previous != metadata:
+            raise RuntimeError("Conflicting metadata for immutable submission ref")
+    source = Path(params["_work_repository"])
+    if source.is_symlink() or not source.is_dir() or not mirror.is_dir() or mirror.is_symlink():
+        raise RuntimeError("Unsafe agent repository or project mirror")
+    try:
+        existing = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", ref),
+                                  capture_output=True, text=True)
+        if existing.returncode == 0:
+            existing_oid = existing.stdout.strip()
+            wanted = params["head_commit"].lower()
+            if existing_oid.lower() != wanted:
+                raise RuntimeError("Submission ref is already occupied by a different commit")
+        # Always fetch, including identical retries. Fetch updates the
+        # internally generated ref only after successful object transfer.
+        subprocess.run(
+            ["git", "--git-dir", str(mirror), "fetch", "--no-tags", str(source),
+             f"{params['head_commit']}:{ref}"], check=True, capture_output=True, timeout=60)
+        temporary = metadata_path.with_name(f".{metadata_path.name}.{secrets.token_hex(8)}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(metadata, stream, ensure_ascii=False, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, metadata_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {"status": "ok", **metadata}
+    except BaseException:
+        raise
 
 
 def proxy_stdio(socket_path: Path) -> int:
