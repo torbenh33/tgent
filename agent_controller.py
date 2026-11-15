@@ -581,6 +581,11 @@ class AgentController:
         head = params.get("head_commit")
         if base != snapshot.base_commit or not isinstance(head, str) or _COMMIT_RE.fullmatch(head) is None:
             raise AgentControllerError("Patch request must identify the recorded base commit and a full commit hash")
+        if head.lower() == base.lower():
+            raise AgentControllerError(
+                "There are no committed changes to submit. Make and commit the intended changes first; "
+                "committing is expected and safe in the private agent repository and does not modify the operator checkout."
+            )
         resolved = await asyncio.create_subprocess_exec(
             "git", "-C", str(snapshot.project_root), "rev-parse", "--verify", "--end-of-options", f"{head}^{{commit}}",
             stdout=asyncio.subprocess.PIPE,
