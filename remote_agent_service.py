@@ -205,6 +205,8 @@ class RemoteAgentService:
         head = request["head_commit"]
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
             raise RuntimeError("head_commit must be a full object id")
+        if head.lower() == request["base_commit"].lower():
+            raise RuntimeError("head_commit must differ from base_commit; submit at least one commit")
         if metadata.get("base_commit") != request["base_commit"]:
             raise RuntimeError("base_commit does not match registered agent")
         snapshot_path = Path(metadata["snapshot_project"])
@@ -355,43 +357,86 @@ class RemoteAgentService:
         """Return metadata for all registered remote agents."""
         return {"agents": await self.controller.list_agents()}
 
+    def _generate_review_patch(self, agent_id: str) -> dict[str, Any]:
+        """Generate the compatibility mbox afresh from a published submission ref."""
+        import hashlib
+        identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
+        metadata_path = Path(str(self.config.state_dir)) / "submissions" / f"{identity}.json"
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            raise RuntimeError("Submission metadata is missing")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        required = {"agent_id": agent_id, "submission_id": agent_id}
+        if any(metadata.get(key) != value for key, value in required.items()):
+            raise RuntimeError("Submission metadata identity is invalid")
+        mirror_value = metadata.get("project_mirror")
+        # Publication records use the registered project mirror; recover it from the
+        # controller registration rather than trusting metadata paths.
+        registered = self.controller.store.get_metadata(agent_id)
+        mirror_value = registered.get("project_mirror")
+        if not isinstance(mirror_value, str):
+            raise RuntimeError("Registered project mirror is unavailable")
+        mirror = Path(mirror_value)
+        if mirror.parent != Path(str(self.config.project_root_dir)) or mirror.is_symlink():
+            raise RuntimeError("Unsafe registered project mirror")
+        ref = metadata.get("ref")
+        if not isinstance(ref, str) or not ref.startswith("refs/agent-submissions/"):
+            raise RuntimeError("Published submission ref is invalid")
+        resolved = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", f"{ref}^{{commit}}"), capture_output=True, text=True)
+        if resolved.returncode or resolved.stdout.strip().lower() != str(metadata.get("commit_id", "")).lower():
+            raise RuntimeError("Published submission ref is missing or does not match metadata")
+        base, head = metadata.get("base"), metadata.get("commit_id")
+        if not isinstance(base, str) or not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", base) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
+            raise RuntimeError("Submission base or commit metadata is invalid")
+        artifact = Path(str(self.config.patches_dir)) / f"{agent_id}.patch"
+        if artifact.is_symlink():
+            raise RuntimeError("Generated patch path must not be a symlink")
+        generated = subprocess.run(("git", "--git-dir", str(mirror), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{base}..{head}"), capture_output=True, timeout=60)
+        if generated.returncode or not generated.stdout:
+            raise RuntimeError("Could not generate review mbox from submitted commit series")
+        raw = generated.stdout
+        if len(raw) > 16 * 1024 * 1024:
+            raise RuntimeError("Generated review mbox exceeds size limit")
+        # Replace git's placeholder cover body with the exact submitted message.
+        from email import policy
+        from email.parser import BytesParser
+        from email.generator import BytesGenerator
+        import io
+        messages = list(__import__("mailbox").mbox(io.BytesIO(raw)))
+        if not messages:
+            raise RuntimeError("Generated review mbox is malformed")
+        cover = metadata.get("cover_letter_message")
+        if not isinstance(cover, str):
+            raise RuntimeError("Submission cover-letter metadata is invalid")
+        messages[0].set_payload(cover)
+        output = io.BytesIO()
+        box = __import__("mailbox").mbox(output)
+        for message in messages: box.add(message)
+        box.close()
+        raw = output.getvalue()
+        temporary = artifact.with_name(f".{artifact.name}.{secrets.token_hex(8)}.tmp")
+        temporary.write_bytes(raw)
+        os.replace(temporary, artifact)
+        return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": metadata.get("submission_id"), "ref": ref, "state": registered.get("state")}
+
     async def _pending_patches(self, request):
-        """Enumerate submitted patch metadata in one protocol response."""
-        agents = await self.controller.list_agents()
+        """Enumerate and materialize pending submissions, retaining per-item errors."""
         patches = []
-        for agent in agents:
-            agent_id = agent.get("agent_id") or agent.get("id")
-            if not isinstance(agent_id, str):
-                continue
-            metadata = self.controller.store.get_metadata(agent_id)
-            if not metadata.get("submitted_head"):
-                continue
-            path = Path(str(self.config.patches_dir)) / f"{agent_id}.patch"
-            if path.is_symlink() or not path.is_file():
-                continue
-            import hashlib
-            size = path.stat().st_size
-            if size > 16 * 1024 * 1024:
-                continue
-            patches.append({"agent_id": agent_id, "artifact": f"{agent_id}.patch", "bytes": size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "submitted_head": metadata.get("submitted_head"), "base_commit": metadata.get("base_commit"), "state": agent.get("state")})
+        for path in sorted((Path(str(self.config.state_dir)) / "submissions").glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                agent_id = raw.get("agent_id") if isinstance(raw, dict) else None
+                if not isinstance(agent_id, str):
+                    raise RuntimeError("Submission metadata identity is invalid")
+                patches.append(self._generate_review_patch(agent_id))
+            except Exception as err:
+                patches.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "error": str(err)})
         return {"patches": patches}
 
     async def _patches(self, request):
-        agent_id = request["agent_id"]
-        metadata = self.controller.store.get_metadata(agent_id)
-        artifact_name = f"{agent_id}.patch"
-        artifact_path = Path(str(self.config.patches_dir)) / artifact_name
-        if artifact_path.is_symlink() or not artifact_path.is_file():
-            return {"agent_id": agent_id, "available": False}
-        return {
-            "agent_id": agent_id,
-            "available": True,
-            "artifact": artifact_name,
-            "bytes": artifact_path.stat().st_size,
-            "submitted_head": metadata.get("submitted_head"),
-            "base_commit": metadata.get("base_commit"),
-            "sha256": __import__("hashlib").sha256(artifact_path.read_bytes()).hexdigest(),
-        }
+        try:
+            return self._generate_review_patch(request["agent_id"])
+        except Exception as err:
+            return {"agent_id": request["agent_id"], "available": False, "error": str(err)}
 
     async def _dispatch(self, message: object) -> dict[str, object]:
         request_id = message.get("request_id") if isinstance(message, dict) else None
