@@ -67,9 +67,13 @@ Implementation details and tests are in [the Phase 2 implementation brief](remot
 - Preserve the existing review import, Maildir, notification, and reply behavior where possible; keep locally authored mbox-series review unchanged.
 - **Exit criteria:** local and remote submissions use one Git publication codepath and the same managed mirror. Single and bulk pending-submission flows generate reviewable mboxes from published refs, preserve cover-letter content/provenance, and retain existing mail/reply semantics. Tests cover missing refs, invalid metadata, retry/idempotence, and failure behavior.
 
+### Phase 2C: Add versioned submission queues
+
+Implementation details, tests, and exit criteria are in [the Phase 2C implementation brief](remote-agent-git-submission-phase-2c.md). Add immutable per-agent `v1`, `v2`, etc. refs; make latest retries idempotent; reject empty queues before writing refs or metadata; and ensure single/bulk retrieval can review each version independently. Preserve the unified publication path and Phase 2B mbox-on-retrieval behavior.
+
 ### Phase 3: Add or adapt Git-based mail events, if needed
 
-- Only after Phase 2 is working, decide whether mail events should be generated directly from Git submission metadata/ref state or continue to use the generated mbox review representation.
+- Only after Phases 2A–2C are working, decide whether mail events should be generated directly from Git submission metadata/ref state or continue to use the generated mbox review representation.
 - Implement the chosen event behavior without restoring mbox generation to the submission operation or duplicating the submission lifecycle.
 - **Exit criteria:** event behavior and notification/reply compatibility are explicit, covered by focused tests, and do not affect Git publication or the host project's active checkout.
 
