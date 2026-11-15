@@ -316,6 +316,8 @@ def _published_review_fixture(tmp_path: Path, agent_id="agent-review"):
     git("update-ref", "refs/heads/base", base)
     (host / "tracked.txt").write_text("submitted\n")
     git("commit", "-qam", "submitted change")
+    (host / "tracked.txt").write_text("submitted again\n")
+    git("commit", "-qam", "follow-up change")
     head = git("rev-parse", "HEAD")
     git("update-ref", "refs/heads/submitted", head)
     mirror = tmp_path / "managed-project.git"
@@ -352,7 +354,14 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     assert one == two
     assert (service.config.patches_dir / one["artifact"]).read_bytes() == first_bytes
     messages = _parse_mbox(first_bytes)
+    assert len(messages) == 3
     assert messages[0].get_content().rstrip("\n") == cover
+    assert messages[0]["Subject"].startswith("[PATCH 0/2] submitted change; follow-up change")
+    assert messages[1]["Subject"].startswith("[PATCH 1/2] submitted change")
+    assert messages[2]["Subject"].startswith("[PATCH 2/2] follow-up change")
+    cover_id = messages[0]["Message-ID"]
+    assert cover_id and all(message["Message-ID"] for message in messages[1:])
+    assert all(message["In-Reply-To"] == cover_id for message in messages[1:])
     assert one["cover_letter_message"] == cover
     assert one["ref"] == "refs/agent-submissions/agent-review"
     assert one["base_commit"] == base and one["submitted_head"] == head
@@ -360,6 +369,23 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
              subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
              (host / "tracked.txt").read_bytes())
     assert after == before
+
+
+def test_halted_patch_notification_has_real_newlines(tmp_path, monkeypatch):
+    import mailbox
+    from types import SimpleNamespace
+    from mcp_agent import _notify_halted_patch
+
+    spool = tmp_path / "mail"
+    monkeypatch.setenv("USER", "operator")
+    _notify_halted_patch({"name": "Worker", "state": "halted"},
+                         {"agent_id": "agent-1", "series_id": "remote-agent-1"},
+                         SimpleNamespace(DEFAULT_PATHS=SimpleNamespace(mail_spool=spool)))
+    message = next(iter(mailbox.Maildir(spool)))
+    body = message.get_payload(decode=True).decode(message.get_content_charset() or "utf-8")
+    assert "\\n" not in body
+    assert "Agent: Worker (agent-1)\nState: halted\n" in body
+    assert body.count("\n") > 5
 
 
 def test_pending_review_missing_and_malformed_metadata_errors(tmp_path):

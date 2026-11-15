@@ -352,13 +352,13 @@ def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_m
     message["Date"] = email.utils.formatdate(localtime=True)
     message["Subject"] = f"[tgit-agent] Patch ready for halted agent {agent_id}"
     message.set_content(
-        f"A new remote patch was imported for an inactive agent.\\n\\n"
-        f"Agent: {name} ({agent_id})\\nState: {state}\\n"
-        f"Review series: {series}\\nSubmitted head: {head}\\nBase: {base}\\n\\n"
+        f"A new remote patch was imported for an inactive agent.\n\n"
+        f"Agent: {name} ({agent_id})\nState: {state}\n"
+        f"Review series: {series}\nSubmitted head: {head}\nBase: {base}\n\n"
         "Review the imported series before applying it. Submitted-patch agents "
         "cannot be continued directly. After review, use start_agent for further "
         "work; continue_agent is available only for eligible halted/stopped agents "
-        "without a submitted patch.\\n"
+        "without a submitted patch.\n"
     )
     box = mailbox.Maildir(paths.mail_spool, create=True)
     try:

@@ -411,7 +411,21 @@ class RemoteAgentService:
         cover = metadata.get("cover_letter_message")
         if not isinstance(cover, str):
             raise RuntimeError("Submission cover-letter metadata is invalid")
+        # Match the review server's generated series convention: a numbered,
+        # useful cover subject, numbered patch subjects, and format-patch's
+        # shallow threading (cover is the parent of every patch).
+        commit_subjects = subprocess.run(
+            ("git", "--git-dir", str(mirror), "log", "--no-merges", "--format=%s", "--reverse", f"{base}..{head}"),
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        commit_subjects = [subject.strip() for subject in commit_subjects if subject.strip()]
+        summary = "; ".join(commit_subjects[:3]) or "patch series"
+        if len(commit_subjects) > 3:
+            summary += f"; and {len(commit_subjects) - 3} more"
+        messages[0].replace_header("Subject", f"[PATCH 0/{len(messages) - 1}] {summary}")
         messages[0].set_payload(cover)
+        for message in messages:
+            message.policy = policy.SMTP
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)
