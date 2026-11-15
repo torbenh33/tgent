@@ -43,10 +43,17 @@ def _get_llm() -> LLMClient:
 
 
 async def _submit_patch(snapshot: Any, params: dict[str, Any]) -> dict[str, Any]:
-    """Local submissions require the managed bare-mirror service path."""
-    raise RuntimeError(
-        "Local submission is unavailable until this setup has a managed bare mirror; "
-        "submission never falls back to mbox export."
+    """Use the shared service Git publication implementation for local sessions."""
+    from remote_agent_service import publish_submission
+
+    agent_id = params["agent_id"]
+    metadata = _controller().store.get_metadata(agent_id)
+    if Path(metadata["snapshot_project"]).resolve() != Path(snapshot.project_root).resolve():
+        raise RuntimeError("Submission work repository does not match registered agent metadata")
+    return await publish_submission(
+        {**params, "_project_mirror": metadata["project_mirror"], "_work_repository": metadata["work_repository"]},
+        state_dir=Path(_STATE_ROOT),
+        project_root_dir=Path(_STATE_ROOT) / "project-mirrors",
     )
 
 def _remote_adapter() -> RemoteAgentAdapter | None:
