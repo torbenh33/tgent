@@ -299,6 +299,93 @@ def test_empty_submission_rejected_before_publication_or_metadata(tmp_path: Path
     assert message.startswith("There are no committed changes to submit")
 
 
+def _published_review_fixture(tmp_path: Path, agent_id="agent-review"):
+    from types import SimpleNamespace
+
+    host = tmp_path / "host"
+    host.mkdir()
+    def git(*args):
+        return subprocess.run(("git", "-C", str(host), *args), check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    (host / "tracked.txt").write_text("base\n")
+    git("add", "tracked.txt")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    git("update-ref", "refs/heads/base", base)
+    (host / "tracked.txt").write_text("submitted\n")
+    git("commit", "-qam", "submitted change")
+    head = git("rev-parse", "HEAD")
+    git("update-ref", "refs/heads/submitted", head)
+    mirror = tmp_path / "managed-project.git"
+    subprocess.run(("git", "init", "--bare", "-q", str(mirror)), check=True)
+    subprocess.run(("git", "--git-dir", str(mirror), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "--git-dir", str(mirror), "config", "user.email", "test@example.invalid"), check=True)
+    ref = f"refs/agent-submissions/{agent_id}"
+    subprocess.run(("git", "--git-dir", str(mirror), "fetch", str(host), "refs/heads/base:refs/test/base", f"refs/heads/submitted:{ref}"), check=True, capture_output=True)
+    state, patches = tmp_path / "state", tmp_path / "patches"
+    (state / "submissions").mkdir(parents=True)
+    patches.mkdir()
+    cover = "Review the important fix.\nPreserve this exact text."
+    (state / "submissions" / f"{agent_id}.json").write_text(json.dumps({
+        "agent_id": agent_id, "submission_id": agent_id, "ref": ref,
+        "commit_id": head, "base": base, "cover_letter_message": cover,
+    }))
+    registration = {"project_mirror": str(mirror), "state": "submitted"}
+    service = RemoteAgentService.__new__(RemoteAgentService)
+    service.config = SimpleNamespace(state_dir=state, project_root_dir=tmp_path, patches_dir=patches)
+    service.controller = SimpleNamespace(store=SimpleNamespace(get_metadata=lambda _id: registration))
+    return service, host, cover, base, head
+
+
+def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touching_host(tmp_path):
+    from mcp_tgit_review import _parse_mbox
+
+    service, host, cover, base, head = _published_review_fixture(tmp_path)
+    before = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
+              subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
+              (host / "tracked.txt").read_bytes())
+    one = service._generate_review_patch("agent-review")
+    first_bytes = (service.config.patches_dir / one["artifact"]).read_bytes()
+    two = service._generate_review_patch("agent-review")
+    assert one == two
+    assert (service.config.patches_dir / one["artifact"]).read_bytes() == first_bytes
+    messages = _parse_mbox(first_bytes)
+    assert messages[0].get_content().rstrip("\n") == cover
+    assert one["cover_letter_message"] == cover
+    assert one["ref"] == "refs/agent-submissions/agent-review"
+    assert one["base_commit"] == base and one["submitted_head"] == head
+    after = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
+             subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
+             (host / "tracked.txt").read_bytes())
+    assert after == before
+
+
+def test_pending_review_missing_and_malformed_metadata_errors(tmp_path):
+    service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
+    with pytest.raises(RuntimeError, match="metadata is missing"):
+        service._generate_review_patch("absent")
+    metadata = service.config.state_dir / "submissions" / "agent-review.json"
+    metadata.write_text("{")
+    with pytest.raises(json.JSONDecodeError):
+        service._generate_review_patch("agent-review")
+    metadata.write_text(json.dumps({"agent_id": "agent-review", "submission_id": "agent-review", "ref": "refs/agent-submissions/agent-review"}))
+    with pytest.raises(RuntimeError, match="missing or does not match"):
+        service._generate_review_patch("agent-review")
+
+
+def test_pending_review_bulk_returns_success_and_per_item_errors(tmp_path):
+    service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
+    (service.config.state_dir / "submissions" / "broken.json").write_text("not json")
+    result = asyncio.run(service._pending_patches({}))
+    assert len(result["patches"]) == 2
+    success = next(item for item in result["patches"] if item.get("agent_id") == "agent-review")
+    failure = next(item for item in result["patches"] if item.get("error"))
+    assert success["submitted_head"]
+    assert "error" in failure
+
+
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
     import asyncio
     from remote_agent_service import RemoteAgentService

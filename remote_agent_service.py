@@ -400,19 +400,25 @@ class RemoteAgentService:
         from email import policy
         from email.parser import BytesParser
         from email.generator import BytesGenerator
-        import io
-        messages = list(__import__("mailbox").mbox(io.BytesIO(raw)))
+        import mailbox
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
+            input_path = Path(temporary_directory) / "generated.mbox"
+            input_path.write_bytes(raw)
+            messages = list(mailbox.mbox(input_path))
         if not messages:
             raise RuntimeError("Generated review mbox is malformed")
         cover = metadata.get("cover_letter_message")
         if not isinstance(cover, str):
             raise RuntimeError("Submission cover-letter metadata is invalid")
         messages[0].set_payload(cover)
-        output = io.BytesIO()
-        box = __import__("mailbox").mbox(output)
-        for message in messages: box.add(message)
-        box.close()
-        raw = output.getvalue()
+        with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
+            output_path = Path(temporary_directory) / "review.mbox"
+            box = mailbox.mbox(output_path)
+            for message in messages:
+                box.add(message)
+            box.close()
+            raw = output_path.read_bytes()
         temporary = artifact.with_name(f".{artifact.name}.{secrets.token_hex(8)}.tmp")
         temporary.write_bytes(raw)
         os.replace(temporary, artifact)
