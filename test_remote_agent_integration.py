@@ -369,7 +369,6 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
     asyncio.run(exercise_lifecycle())
 
 
-@pytest.mark.skip(reason="Phase 2: remote ref-based submission retrieval/review is not implemented")
 def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, request) -> None:
     """Export a commit patch through the service and retrieve it through the adapter."""
     from pathlib import PurePosixPath
@@ -403,26 +402,50 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
         text=True,
     ).stdout.strip()
     agent_id = snapshot.root.name
-    result = asyncio.run(
-        service._submit_patch(snapshot, {"base_commit": base_commit, "head_commit": head_commit})
-    )
-    assert result["base"] == base_commit
-    assert result["head"] == head_commit
-    assert result["patch_artifact"] == f"{agent_id}.patch"
-    assert result["patch_bytes"] > 0
+    project_name = project.as_posix().replace("/", "_")
+    mirror = Path(str(config.project_root_dir)) / project_name
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(("git", "init", "--bare", str(mirror)), check=True, capture_output=True)
+    _git(project, "push", str(mirror), f"{base_commit}:refs/agent-sync/{base_commit}")
+    _git(snapshot.project_root, "push", str(mirror), f"{head_commit}:refs/agent-submissions/{agent_id}")
+    subprocess.run(("git", "--git-dir", str(mirror), "config", "user.name", "Integration Test"), check=True)
+    subprocess.run(("git", "--git-dir", str(mirror), "config", "user.email", "integration@example.invalid"), check=True)
     service.controller.store.create(
         agent_id,
-        {"agent_id": agent_id, "state": "awaiting_review", "submitted_head": head_commit},
+        {
+            "agent_id": agent_id,
+            "state": "running",
+            "snapshot_project": str(snapshot.project_root),
+            "snapshot_root": str(snapshot.root),
+            "base_commit": base_commit,
+            "project_mirror": str(mirror),
+        },
         [],
     )
+    result = asyncio.run(
+        service._submit_patch(snapshot, {
+            "agent_id": agent_id,
+            "base_commit": base_commit,
+            "head_commit": head_commit,
+            "cover_letter_message": "End-to-end submission",
+            "_project_mirror": str(mirror),
+        })
+    )
+    assert result["base"] == base_commit
+    assert result["commit_id"] == head_commit
 
     class ServiceProtocolClient:
         def request(self, message: dict[str, object]) -> dict[str, object]:
             metadata = asyncio.run(service._patches({"agent_id": message["agent_id"]}))
+            assert metadata["available"], metadata
             return {"ok": True, "result": metadata}
 
-    def local_rsync(argv, *, check):
-        assert check is True
+    real_run = subprocess.run
+
+    def local_rsync(argv, *args, **kwargs):
+        if argv[0] != "rsync":
+            return real_run(argv, *args, **kwargs)
+        assert kwargs["check"] is True
         source = Path(argv[-2].removeprefix("beep:"))
         Path(argv[-1]).write_bytes(source.read_bytes())
         return subprocess.CompletedProcess(argv, 0)
@@ -439,4 +462,4 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
     assert "change tracked content" in patch_content
     assert "before patch" in patch_content
     assert "after patch" in patch_content
-    assert result["patch_bytes"] == retrieved.stat().st_size
+    assert "End-to-end submission" in patch_content
