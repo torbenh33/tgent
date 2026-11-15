@@ -168,13 +168,16 @@ class RemoteAgentAdapter:
         import re
         for item in patches:
             aid, name = item.get("agent_id"), item.get("artifact")
-            if not isinstance(aid, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", aid) is None or name != f"{aid}.patch":
+            if not isinstance(aid, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", aid) is None or not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.patch", name) is None:
                 if isinstance(aid, str): results[aid] = RemoteAgentAdapterError("Invalid artifact identity")
                 continue
             size, digest = item.get("bytes"), item.get("sha256")
             if type(size) is not int or not 0 <= size <= 16 * 1024 * 1024 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                 results[aid] = RemoteAgentAdapterError("Invalid artifact metadata")
                 continue
+            # Artifact names are server-generated identities and may be keyed by
+            # submission ID rather than agent ID. Validate the basename above;
+            # never join caller-provided directories or use agent_id as a path.
             valid.append(item)
         if not valid:
             return results
