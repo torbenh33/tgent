@@ -4,8 +4,8 @@ This brief covers only retrieval and review compatibility. It assumes Phase 2A h
 
 ## Scope and source of truth
 
-- **Remote project bare mirror:** source of submitted commits and immutable `refs/agent-submissions/<agent-id>` refs.
-- **Service-managed submission metadata:** source of agent/submission identity, declared base, submitted commit ID, cover-letter message, and published ref. Keep this metadata where Phase 1 stores it; do not move it into the mirror as part of this phase.
+- **Remote project bare mirror:** source of submitted commits and immutable versioned refs `refs/agent-submissions/<agent-id>/v1`, `/v2`, and so on.
+- **Service-managed submission metadata:** source of agent/submission identity, assigned version, declared base, submitted commit ID, cover-letter message, and published ref. Keep this metadata where Phase 1 stores it; do not move it into the mirror as part of this phase.
 - **Host project repository:** existing review/import repository. Retrieval and review import must not change its active branch, `HEAD`, index, or checked-out files.
 - **Review store and Maildir:** retain the current mbox-based review representation and mail/reply behavior.
 
@@ -13,12 +13,12 @@ Git refs plus service-managed provenance are the submission source of truth. An 
 
 ## Required behavior
 
-1. Update single and bulk pending-submission flows to enumerate submission metadata and resolve each published ref in the remote project bare mirror. Do not rely on an mbox generated during submission or on a pre-existing `.patch` artifact.
+1. Update single and bulk pending-submission flows to enumerate all pending version records and resolve each published versioned ref in the remote project bare mirror. Report agent and version distinctly; do not collapse multiple revisions of one agent into one item. Do not rely on an mbox generated during submission or on a pre-existing `.patch` artifact.
 2. At retrieval time, generate the review mbox for the submitted commit series. Preserve the submitted cover-letter message exactly, along with agent identity, declared base, submitted commit, and published ref in review provenance/diagnostics.
 3. Keep the existing retrieval and review APIs usable where practical. The existing adapter may continue downloading a generated mbox artifact if that is the least disruptive interface, but the service must generate it from the published ref and managed metadata on demand. Do not add a second submission transport or a separate source of truth.
 4. Preserve existing single/bulk partial-failure semantics, review import behavior, Maildir insertion, notifications/replies, and agent lifecycle acknowledgements. Do not redesign mail events; that is a later phase.
 5. Missing refs, missing or malformed metadata, and mbox-generation failures must produce explicit per-submission errors. Do not silently omit a submission or report it as successfully fetched. Retrieval/import must not mutate the host project checkout.
-6. Repeated retrieval of unchanged ref+metadata must produce a stable review result and remain idempotent through the existing review importer. If generated artifact files are retained for compatibility, define their lifecycle and avoid treating stale files as authoritative.
+6. Repeated retrieval of unchanged ref+metadata must produce a stable review result and remain idempotent through the existing review importer. Distinct versions for one agent must remain separately retrievable and auditable. If generated artifact files are retained for compatibility, define their lifecycle and avoid treating stale files as authoritative.
 
 ## Tests and exit criteria
 
