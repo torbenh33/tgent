@@ -8,6 +8,7 @@ and patch-submission callbacks rather than embedding project-specific policy.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -284,6 +285,21 @@ class AgentController:
             else load_project_config(selected_project_root)
         )
         agent_id = secrets.token_hex(16)
+        local_mirror: Path | None = None
+        if self.project_root is not None and selected_project_root == self.project_root:
+            mirrors_root = Path(self.store.state_root) / "project-mirrors"
+            mirrors_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if mirrors_root.is_symlink() or not mirrors_root.is_dir():
+                raise AgentControllerError("Managed project mirror root must not be a symlink")
+            key = hashlib.sha256(str(self.project_root.resolve()).encode("utf-8")).hexdigest()[:16]
+            local_mirror = mirrors_root / key
+            if local_mirror.is_symlink():
+                raise AgentControllerError("Managed project mirror must not be a symlink")
+            if not local_mirror.exists():
+                subprocess.run(["git", "init", "--bare", str(local_mirror)], check=True, capture_output=True)
+            if not local_mirror.is_dir():
+                raise AgentControllerError("Managed project mirror is not a directory")
+            subprocess.run(["git", "--git-dir", str(local_mirror), "fetch", str(self.project_root), "+refs/*:refs/*"], check=True, capture_output=True)
         # MCP servers are installed entry points in the worker runtime, not project files.
         seeded = set(self.default_tool_modules)
         self._tool_allowlists[agent_id] = seeded
@@ -319,9 +335,11 @@ class AgentController:
                 "updated_at": time.time(),
                 "base_commit": snapshot.base_commit,
                 **({"project_mirror": str(mirror), "project_name": _project_name} if mirror else {}),
+                **({"project_mirror": str(local_mirror)} if local_mirror else {}),
                 "runtime_version": self.runtime_version,
                 "snapshot_root": str(snapshot.root),
                 "snapshot_project": str(snapshot.project_root),
+                "work_repository": str(snapshot.project_root),
                 "linked_worktree": snapshot.linked_worktree,
                 "worker_pid": None,
                 "stop_reason": None,
