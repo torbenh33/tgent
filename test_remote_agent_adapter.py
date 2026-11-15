@@ -260,6 +260,21 @@ def test_batch_patch_enumeration_and_transfer_use_one_call_each(tmp_path, monkey
     assert all(isinstance(value, Path) for value in result.values())
 
 
+def test_batch_patch_accepts_submission_artifact_identity_distinct_from_agent(tmp_path, monkeypatch):
+    import hashlib
+    config = RemoteAgentConfig("beep", PurePosixPath("/srv/tgent"))
+    destination = tmp_path / "patches"; destination.mkdir()
+    raw = b"submission patch"
+    item = {"agent_id": "0320b01d0d3a2b37cd06de4ceec3f7ff", "artifact": "ae7e397aa0853aca49c1353016e39a37.patch", "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    adapter = RemoteAgentAdapter(config, client=_FakeClient([]))
+    def rsync(argv, **kwargs):
+        assert "ae7e397aa0853aca49c1353016e39a37.patch" in argv[-2]
+        (destination / item["artifact"]).write_bytes(raw)
+    monkeypatch.setattr(adapter_module.subprocess, "run", rsync)
+    result = adapter.retrieve_patches([item], destination)
+    assert result[item["agent_id"]] == destination / item["artifact"]
+
+
 def test_batch_patch_empty_and_partial_metadata_failures(tmp_path, monkeypatch):
     config = RemoteAgentConfig("beep", PurePosixPath("/srv/tgent"))
     client = _FakeClient([{"ok": True, "result": {"patches": []}}])
