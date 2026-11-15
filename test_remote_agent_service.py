@@ -264,11 +264,11 @@ def test_submit_patch_fetches_registered_repo_to_mirror_and_saves_metadata(tmp_p
         # Caller-supplied paths are ignored; only registered metadata is trusted.
         "source_path": str(tmp_path / "attacker-source"), "mirror_path": str(tmp_path / "attacker-mirror"),
     }))
-    ref = "refs/agent-submissions/agent-123"
+    ref = "refs/agent-submissions/agent-123/v1"
     published = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", ref), check=True, capture_output=True, text=True).stdout.strip()
     assert published == head
-    assert result["ref"] == ref
-    saved = json.loads((tmp_path / "state" / "submissions" / "agent-123.json").read_text())
+    assert result["ref"] == ref and result["version"] == 1
+    saved = json.loads((tmp_path / "state" / "submissions" / "agent-123" / "v1.json").read_text())
     assert saved["cover_letter_message"] == "Please review this change."
 
     service.controller.store.get_metadata = lambda _agent_id: registered
@@ -294,7 +294,7 @@ def test_empty_submission_rejected_before_publication_or_metadata(tmp_path: Path
         publish_submission({"agent_id": "empty", "base_commit": "a" * 40, "head_commit": "a" * 40,
             "cover_letter_message": "empty", "_work_repository": str(source), "_project_mirror": str(mirror)},
             state_dir=state, project_root_dir=tmp_path)
-    assert subprocess.run(("git", "--git-dir", str(mirror), "show-ref", "--verify", "refs/agent-submissions/empty"), capture_output=True).returncode != 0
+    assert subprocess.run(("git", "--git-dir", str(mirror), "show-ref", "--verify", "refs/agent-submissions/empty/v1"), capture_output=True).returncode != 0
     assert not (state / "submissions" / "empty.json").exists()
     assert message.startswith("There are no committed changes to submit")
 
@@ -324,14 +324,14 @@ def _published_review_fixture(tmp_path: Path, agent_id="agent-review"):
     subprocess.run(("git", "init", "--bare", "-q", str(mirror)), check=True)
     subprocess.run(("git", "--git-dir", str(mirror), "config", "user.name", "Test"), check=True)
     subprocess.run(("git", "--git-dir", str(mirror), "config", "user.email", "test@example.invalid"), check=True)
-    ref = f"refs/agent-submissions/{agent_id}"
+    ref = f"refs/agent-submissions/{agent_id}/v1"
     subprocess.run(("git", "--git-dir", str(mirror), "fetch", str(host), "refs/heads/base:refs/test/base", f"refs/heads/submitted:{ref}"), check=True, capture_output=True)
     state, patches = tmp_path / "state", tmp_path / "patches"
-    (state / "submissions").mkdir(parents=True)
+    (state / "submissions" / agent_id).mkdir(parents=True)
     patches.mkdir()
     cover = "Review the important fix.\nPreserve this exact text."
-    (state / "submissions" / f"{agent_id}.json").write_text(json.dumps({
-        "agent_id": agent_id, "submission_id": agent_id, "ref": ref,
+    (state / "submissions" / agent_id / "v1.json").write_text(json.dumps({
+        "agent_id": agent_id, "submission_id": f"{agent_id}-v1", "version": 1, "ref": ref,
         "commit_id": head, "base": base, "cover_letter_message": cover,
     }))
     registration = {"project_mirror": str(mirror), "state": "submitted"}
@@ -348,9 +348,9 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     before = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
               subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
               (host / "tracked.txt").read_bytes())
-    one = service._generate_review_patch("agent-review")
+    one = service._generate_review_patch("agent-review", 1)
     first_bytes = (service.config.patches_dir / one["artifact"]).read_bytes()
-    two = service._generate_review_patch("agent-review")
+    two = service._generate_review_patch("agent-review", 1)
     assert one == two
     assert (service.config.patches_dir / one["artifact"]).read_bytes() == first_bytes
     messages = _parse_mbox(first_bytes)
@@ -363,7 +363,7 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     assert cover_id and all(message["Message-ID"] for message in messages[1:])
     assert all(message["In-Reply-To"] == cover_id for message in messages[1:])
     assert one["cover_letter_message"] == cover
-    assert one["ref"] == "refs/agent-submissions/agent-review"
+    assert one["ref"] == "refs/agent-submissions/agent-review/v1"
     assert one["base_commit"] == base and one["submitted_head"] == head
     after = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
              subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
@@ -390,11 +390,11 @@ def test_halted_patch_notification_has_real_newlines(tmp_path, monkeypatch):
 
 def test_review_mbox_artifact_identity_uses_submission_version(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
-    metadata_path = service.config.state_dir / "submissions" / "agent-review.json"
+    metadata_path = service.config.state_dir / "submissions" / "agent-review" / "v1.json"
     metadata = json.loads(metadata_path.read_text())
     metadata["submission_id"] = "agent-review-revision-2"
     metadata_path.write_text(json.dumps(metadata))
-    result = service._generate_review_patch("agent-review")
+    result = service._generate_review_patch("agent-review", 1)
     assert result["artifact"] == "agent-review-revision-2.patch"
     assert (service.config.patches_dir / result["artifact"]).is_file()
 
@@ -403,13 +403,13 @@ def test_pending_review_missing_and_malformed_metadata_errors(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     with pytest.raises(RuntimeError, match="metadata is missing"):
         service._generate_review_patch("absent")
-    metadata = service.config.state_dir / "submissions" / "agent-review.json"
+    metadata = service.config.state_dir / "submissions" / "agent-review" / "v1.json"
     metadata.write_text("{")
     with pytest.raises(json.JSONDecodeError):
         service._generate_review_patch("agent-review")
-    metadata.write_text(json.dumps({"agent_id": "agent-review", "submission_id": "agent-review", "ref": "refs/agent-submissions/agent-review"}))
+    metadata.write_text(json.dumps({"agent_id": "agent-review", "submission_id": "agent-review-v1", "ref": "refs/agent-submissions/agent-review/v1"}))
     with pytest.raises(RuntimeError, match="missing or does not match"):
-        service._generate_review_patch("agent-review")
+        service._generate_review_patch("agent-review", 1)
 
 
 def test_pending_review_bulk_returns_success_and_per_item_errors(tmp_path):

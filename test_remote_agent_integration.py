@@ -407,7 +407,6 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
     mirror.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(("git", "init", "--bare", str(mirror)), check=True, capture_output=True)
     _git(project, "push", str(mirror), f"{base_commit}:refs/agent-sync/{base_commit}")
-    _git(snapshot.project_root, "push", str(mirror), f"{head_commit}:refs/agent-submissions/{agent_id}")
     subprocess.run(("git", "--git-dir", str(mirror), "config", "user.name", "Integration Test"), check=True)
     subprocess.run(("git", "--git-dir", str(mirror), "config", "user.email", "integration@example.invalid"), check=True)
     service.controller.store.create(
@@ -433,6 +432,9 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
     )
     assert result["base"] == base_commit
     assert result["commit_id"] == head_commit
+    assert result["version"] == 1
+    assert result["ref"] == f"refs/agent-submissions/{agent_id}/v1"
+    assert (Path(str(config.state_dir)) / "submissions" / agent_id / "v1.json").is_file()
 
     class ServiceProtocolClient:
         def request(self, message: dict[str, object]) -> dict[str, object]:
@@ -457,7 +459,7 @@ def test_patch_submission_and_retrieval_end_to_end(tmp_path: Path, monkeypatch, 
 
     retrieved = adapter.retrieve_patch(agent_id, destination)
 
-    assert retrieved == destination / f"{agent_id}.patch"
+    assert retrieved == destination / f"{agent_id}-v1.patch"
     patch_content = retrieved.read_text(encoding="utf-8")
     assert "change tracked content" in patch_content
     assert "before patch" in patch_content

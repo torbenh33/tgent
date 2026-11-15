@@ -363,6 +363,12 @@ class RemoteAgentService:
         identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
         metadata_dir = Path(str(self.config.state_dir)) / "submissions"
         metadata_path = metadata_dir / f"{identity}.json" if version is None else metadata_dir / identity / f"v{version}.json"
+        if version is None and not metadata_path.is_file():
+            versioned = sorted((metadata_dir / identity).glob("v[0-9]*.json"))
+            if len(versioned) == 1:
+                metadata_path = versioned[0]
+            else:
+                raise RuntimeError("Submission metadata is missing or version must be specified")
         if metadata_path.is_symlink() or not metadata_path.is_file():
             raise RuntimeError("Submission metadata is missing")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -430,6 +436,7 @@ class RemoteAgentService:
         messages[0].set_payload(cover)
         for message in messages:
             message.policy = policy.SMTP
+            message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)
@@ -468,7 +475,9 @@ class RemoteAgentService:
 
     async def _patches(self, request):
         try:
-            return self._generate_review_patch(request["agent_id"])
+            identity = re.sub(r"[^A-Za-z0-9_-]", "-", request["agent_id"])
+            versioned = sorted((Path(str(self.config.state_dir)) / "submissions" / identity).glob("v[0-9]*.json"))
+            return self._generate_review_patch(request["agent_id"], int(versioned[-1].stem[1:]) if versioned else None)
         except Exception as err:
             return {"agent_id": request["agent_id"], "available": False, "error": str(err)}
 
