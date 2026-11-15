@@ -424,9 +424,12 @@ async def retrieve_agent_patch(agent_id: str, destination: str = "/tmp") -> dict
     remote = _remote_adapter()
     if remote is None:
         return {"agent_id": agent_id, "available": False, "message": "Patch retrieval requires remote mode."}
+    metadata = await asyncio.to_thread(remote.patches, agent_id)
+    if metadata.get("available") is not True:
+        return {"agent_id": agent_id, "available": False, "error": metadata.get("error")}
     path = await asyncio.to_thread(remote.retrieve_patch, agent_id, destination)
     if path is None:
-        return {"agent_id": agent_id, "available": False}
+        return {"agent_id": agent_id, "available": False, "error": "Submission became unavailable during retrieval."}
     return {"agent_id": agent_id, "available": True, "path": str(path)}
 
 

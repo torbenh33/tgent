@@ -388,6 +388,17 @@ def test_halted_patch_notification_has_real_newlines(tmp_path, monkeypatch):
     assert body.count("\n") > 5
 
 
+def test_review_mbox_artifact_identity_uses_submission_version(tmp_path):
+    service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
+    metadata_path = service.config.state_dir / "submissions" / "agent-review.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["submission_id"] = "agent-review-revision-2"
+    metadata_path.write_text(json.dumps(metadata))
+    result = service._generate_review_patch("agent-review")
+    assert result["artifact"] == "agent-review-revision-2.patch"
+    assert (service.config.patches_dir / result["artifact"]).is_file()
+
+
 def test_pending_review_missing_and_malformed_metadata_errors(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     with pytest.raises(RuntimeError, match="metadata is missing"):

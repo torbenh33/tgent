@@ -210,8 +210,9 @@ class RemoteAgentAdapter:
         directory = Path(destination).expanduser().resolve()
         if not directory.is_dir():
             raise RemoteAgentAdapterError(f"Patch destination is not a directory: {directory}")
-        artifact_name = f"{agent_id}.patch"
-        if result.get("artifact") != artifact_name:
+        artifact_name = result.get("artifact")
+        import re
+        if not isinstance(artifact_name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.patch", artifact_name) is None:
             raise RemoteAgentAdapterError("Remote service returned an invalid patch artifact name")
         size = result.get("bytes")
         if type(size) is not int or not 0 <= size <= 16 * 1024 * 1024:

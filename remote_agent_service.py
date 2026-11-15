@@ -365,8 +365,7 @@ class RemoteAgentService:
         if metadata_path.is_symlink() or not metadata_path.is_file():
             raise RuntimeError("Submission metadata is missing")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        required = {"agent_id": agent_id, "submission_id": agent_id}
-        if any(metadata.get(key) != value for key, value in required.items()):
+        if metadata.get("agent_id") != agent_id:
             raise RuntimeError("Submission metadata identity is invalid")
         mirror_value = metadata.get("project_mirror")
         # Publication records use the registered project mirror; recover it from the
@@ -387,7 +386,11 @@ class RemoteAgentService:
         base, head = metadata.get("base"), metadata.get("commit_id")
         if not isinstance(base, str) or not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", base) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
             raise RuntimeError("Submission base or commit metadata is invalid")
-        artifact = Path(str(self.config.patches_dir)) / f"{agent_id}.patch"
+        submission_id = metadata.get("submission_id")
+        if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", submission_id):
+            raise RuntimeError("Submission ID metadata is invalid")
+        # Keep revision artifacts separate while a previous revision is reviewed.
+        artifact = Path(str(self.config.patches_dir)) / f"{submission_id}.patch"
         if artifact.is_symlink():
             raise RuntimeError("Generated patch path must not be a symlink")
         generated = subprocess.run(("git", "--git-dir", str(mirror), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{base}..{head}"), capture_output=True, timeout=60)
@@ -436,7 +439,7 @@ class RemoteAgentService:
         temporary = artifact.with_name(f".{artifact.name}.{secrets.token_hex(8)}.tmp")
         temporary.write_bytes(raw)
         os.replace(temporary, artifact)
-        return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": metadata.get("submission_id"), "ref": ref, "state": registered.get("state")}
+        return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": submission_id, "ref": ref, "state": registered.get("state")}
 
     async def _pending_patches(self, request):
         """Enumerate and materialize pending submissions, retaining per-item errors."""
