@@ -281,6 +281,24 @@ def test_submit_patch_fetches_registered_repo_to_mirror_and_saves_metadata(tmp_p
     assert absent.returncode != 0
 
 
+def test_empty_submission_rejected_before_publication_or_metadata(tmp_path: Path) -> None:
+    from remote_agent_service import publish_submission
+
+    mirror = tmp_path / "mirror"
+    subprocess.run(("git", "init", "--bare", "-q", str(mirror)), check=True)
+    source = tmp_path / "work"
+    source.mkdir()
+    state = tmp_path / "state"
+    message = "There are no committed changes to submit. Make and commit the intended changes first; committing is expected and safe in the private agent repository and does not modify the operator checkout."
+    with pytest.raises(RuntimeError, match="no committed changes to submit"):
+        publish_submission({"agent_id": "empty", "base_commit": "a" * 40, "head_commit": "a" * 40,
+            "cover_letter_message": "empty", "_work_repository": str(source), "_project_mirror": str(mirror)},
+            state_dir=state, project_root_dir=tmp_path)
+    assert subprocess.run(("git", "--git-dir", str(mirror), "show-ref", "--verify", "refs/agent-submissions/empty"), capture_output=True).returncode != 0
+    assert not (state / "submissions" / "empty.json").exists()
+    assert message.startswith("There are no committed changes to submit")
+
+
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
     import asyncio
     from remote_agent_service import RemoteAgentService

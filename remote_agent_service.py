@@ -518,6 +518,11 @@ class RemoteAgentService:
 def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_dir: Path) -> dict[str, Any]:
     """Fetch a registered commit to its immutable managed submission ref."""
     agent_id = params["agent_id"]
+    if params.get("head_commit") == params.get("base_commit"):
+        raise RuntimeError(
+            "There are no committed changes to submit. Make and commit the intended changes first; "
+            "committing is expected and safe in the private agent repository and does not modify the operator checkout."
+        )
     identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
     ref = f"refs/agent-submissions/{identity}"
     mirror_value = params.get("_project_mirror")

@@ -11,6 +11,22 @@ from agent_controller import AgentController, AgentControllerError
 from agent_store import AgentStore
 
 
+@pytest.mark.anyio
+async def test_submit_patch_rejects_base_as_head_before_git_or_callback() -> None:
+    from types import SimpleNamespace
+
+    base = "a" * 40
+    controller = AgentController.__new__(AgentController)
+    controller.patch_submit_callback = lambda *_args: pytest.fail("must not publish")
+    controller._runtimes = {"agent": SimpleNamespace(snapshot=SimpleNamespace(base_commit=base))}
+    class Store:
+        def update_metadata(self, *_args):
+            pytest.fail("must not update metadata")
+    controller.store = Store()
+    with pytest.raises(AgentControllerError, match="no committed changes to submit.*Make and commit.*private agent repository.*does not modify the operator checkout"):
+        await controller._submit_patch("agent", {"base_commit": base, "head_commit": base})
+
+
 def test_resolve_agent_id_prefix_validation_and_canonical_full_id(tmp_path) -> None:
     store = AgentStore(tmp_path / "state")
     for agent_id in ("abcdef001122", "abcdef991122"):
