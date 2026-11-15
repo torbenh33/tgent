@@ -357,11 +357,12 @@ class RemoteAgentService:
         """Return metadata for all registered remote agents."""
         return {"agents": await self.controller.list_agents()}
 
-    def _generate_review_patch(self, agent_id: str) -> dict[str, Any]:
+    def _generate_review_patch(self, agent_id: str, version: int | None = None) -> dict[str, Any]:
         """Generate the compatibility mbox afresh from a published submission ref."""
         import hashlib
         identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
-        metadata_path = Path(str(self.config.state_dir)) / "submissions" / f"{identity}.json"
+        metadata_dir = Path(str(self.config.state_dir)) / "submissions"
+        metadata_path = metadata_dir / f"{identity}.json" if version is None else metadata_dir / identity / f"v{version}.json"
         if metadata_path.is_symlink() or not metadata_path.is_file():
             raise RuntimeError("Submission metadata is missing")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -444,15 +445,25 @@ class RemoteAgentService:
     async def _pending_patches(self, request):
         """Enumerate and materialize pending submissions, retaining per-item errors."""
         patches = []
-        for path in sorted((Path(str(self.config.state_dir)) / "submissions").glob("*.json")):
+        metadata_dir = Path(str(self.config.state_dir)) / "submissions"
+        entries = []
+        for path in sorted(metadata_dir.glob("*.json")):
+            entries.append((path, None))  # pre-versioned compatibility record
+        for agent_dir in sorted(path for path in metadata_dir.iterdir() if path.is_dir() and not path.is_symlink()):
+            for path in sorted(agent_dir.glob("v[0-9]*.json")):
+                match = re.fullmatch(r"v([1-9][0-9]*)\.json", path.name)
+                if match:
+                    entries.append((path, int(match.group(1))))
+        for path, version in entries:
+            raw = None
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 agent_id = raw.get("agent_id") if isinstance(raw, dict) else None
                 if not isinstance(agent_id, str):
                     raise RuntimeError("Submission metadata identity is invalid")
-                patches.append(self._generate_review_patch(agent_id))
+                patches.append(self._generate_review_patch(agent_id, version))
             except Exception as err:
-                patches.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "error": str(err)})
+                patches.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
         return {"patches": patches}
 
     async def _patches(self, request):
@@ -547,7 +558,6 @@ def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_
             "committing is expected and safe in the private agent repository and does not modify the operator checkout."
         )
     identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
-    ref = f"refs/agent-submissions/{identity}"
     mirror_value = params.get("_project_mirror")
     if not isinstance(mirror_value, str):
         raise RuntimeError("Agent has no registered project mirror")
@@ -556,13 +566,23 @@ def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_
         raise RuntimeError("Registered project mirror is outside the managed project directory")
     metadata_dir = state_dir / "submissions"
     _managed_directory(metadata_dir)
-    metadata_path = metadata_dir / f"{identity}.json"
-    metadata = {"agent_id": agent_id, "submission_id": agent_id, "commit_id": params["head_commit"],
-                "base": params["base_commit"], "cover_letter_message": params["cover_letter_message"], "ref": ref}
-    if metadata_path.exists():
-        previous = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if previous != metadata:
-            raise RuntimeError("Conflicting metadata for immutable submission ref")
+    agent_dir = metadata_dir / identity
+    _managed_directory(agent_dir)
+    records = sorted(agent_dir.glob("v[0-9]*.json"), key=lambda path: int(path.stem[1:]) if path.stem[1:].isdigit() else 0)
+    latest = None
+    if records:
+        latest_path = records[-1]
+        if not re.fullmatch(r"v[1-9][0-9]*\.json", latest_path.name):
+            raise RuntimeError("Invalid existing submission version metadata")
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        if latest.get("commit_id") == params["head_commit"] and latest.get("base") == params["base_commit"] and latest.get("cover_letter_message") == params["cover_letter_message"]:
+            return {"status": "ok", **latest}
+    version = (int(records[-1].stem[1:]) + 1) if records else 1
+    ref = f"refs/agent-submissions/{identity}/v{version}"
+    metadata_path = agent_dir / f"v{version}.json"
+    metadata = {"agent_id": agent_id, "submission_id": f"{agent_id}-v{version}", "version": version,
+                "commit_id": params["head_commit"], "base": params["base_commit"],
+                "cover_letter_message": params["cover_letter_message"], "ref": ref}
     source = Path(params["_work_repository"])
     if source.is_symlink() or not source.is_dir() or not mirror.is_dir() or mirror.is_symlink():
         raise RuntimeError("Unsafe agent repository or project mirror")
@@ -570,12 +590,8 @@ def publish_submission(params: dict[str, Any], *, state_dir: Path, project_root_
         existing = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", ref),
                                   capture_output=True, text=True)
         if existing.returncode == 0:
-            existing_oid = existing.stdout.strip()
-            wanted = params["head_commit"].lower()
-            if existing_oid.lower() != wanted:
-                raise RuntimeError("Submission ref is already occupied by a different commit")
-        # Always fetch, including identical retries. Fetch updates the
-        # internally generated ref only after successful object transfer.
+            raise RuntimeError("Submission ref is already occupied by a different or inconsistent version")
+        # Fetch into a previously unused internally generated ref.
         subprocess.run(
             ["git", "--git-dir", str(mirror), "fetch", "--no-tags", str(source),
              f"{params['head_commit']}:{ref}"], check=True, capture_output=True, timeout=60)
