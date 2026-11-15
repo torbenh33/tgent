@@ -880,10 +880,39 @@ class AgentController:
                     or snapshot_project.parent != snapshot_root):
                 raise AgentControllerError("Recorded agent snapshot is unavailable or invalid")
             history = self.store.get_history(agent_id)
-            if len(history) + len(messages) > MAX_HISTORY_MESSAGES or len(json.dumps([*history, *messages], ensure_ascii=False).encode("utf-8")) > MAX_HISTORY_MESSAGE_BYTES:
-                raise AgentControllerError("Continued history exceeds size limit")
             if agent_id in restarting:
                 raise AgentControllerError("Agent restart is already in progress")
+            pending_question = validate.get("operator_question")
+            if pending_question is not None:
+                # The worker persisted the assistant tool call before blocking in
+                # ask_operator. Reconcile it with a tool result before replaying
+                # history to the provider; never append operator text as a user turn.
+                response = validate.get("operator_response")
+                if response is None:
+                    response = "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
+                    # Record the submitted answer before changing history. A retry
+                    # after a crash must reuse this exact answer, not replace it.
+                    self.store.update_metadata(agent_id, {"operator_response": response})
+                pending_ids: list[str] = []
+                completed_ids = {m.get("tool_call_id") for m in history if m.get("role") == "tool"}
+                for item in history:
+                    if item.get("role") != "assistant":
+                        continue
+                    for call in item.get("tool_calls", []):
+                        fn = call.get("function", {}) if isinstance(call, dict) else {}
+                        if fn.get("name") == "ask_operator" and call.get("id") not in completed_ids:
+                            pending_ids.append(call["id"])
+                if pending_ids:
+                    tool_results = [{"role": "tool", "tool_call_id": call_id, "content": json.dumps({"response": response}, ensure_ascii=False)} for call_id in pending_ids]
+                    history = self.store.append_history(agent_id, tool_results)
+                    self.store.update_metadata(agent_id, {"operator_question": None, "operator_response": response})
+                    messages = []
+                else:
+                    # If history already contains the answer, a retry must not
+                    # create another user turn (nor deliver a second answer).
+                    messages = []
+            if len(history) + len(messages) > MAX_HISTORY_MESSAGES or len(json.dumps([*history, *messages], ensure_ascii=False).encode("utf-8")) > MAX_HISTORY_MESSAGE_BYTES:
+                raise AgentControllerError("Continued history exceeds size limit")
             restarting.add(agent_id)
             try:
                 start_options = {"source_root": snapshot_project}
