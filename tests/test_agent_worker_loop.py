@@ -192,7 +192,7 @@ def test_worker_resumes_after_patch_review_feedback() -> None:
         "type": "function",
         "function": {
             "name": "submit_patch_queue",
-            "arguments": json.dumps({"head_commit": head_commit}),
+            "arguments": json.dumps({"head_commit": head_commit, "cover_letter_message": "Prepared patch."}),
         },
     }
     completions = [
