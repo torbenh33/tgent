@@ -292,3 +292,15 @@ def test_batch_patch_empty_and_partial_metadata_failures(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert isinstance(result["../bad"], Exception)
     assert isinstance(result["agent-good"], Exception)
+
+
+def test_batch_patch_rejects_invalid_identity_without_transfer(tmp_path, monkeypatch):
+    destination = tmp_path / "patches"; destination.mkdir()
+    adapter = RemoteAgentAdapter(RemoteAgentConfig("beep", PurePosixPath("/srv/tgent")), client=_FakeClient([]))
+    calls = []
+    monkeypatch.setattr(adapter_module.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    for invalid in ("../agent", "bad/id", "", "éagent"):
+        item = {"agent_id": invalid, "artifact": "safe.patch", "bytes": 0, "sha256": "0" * 64}
+        result = adapter.retrieve_patches([item], destination)
+        assert isinstance(result[invalid], RemoteAgentAdapterError)
+    assert calls == []

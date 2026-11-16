@@ -394,7 +394,7 @@ class RemoteAgentService:
         if not isinstance(base, str) or not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", base) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
             raise RuntimeError("Submission base or commit metadata is invalid")
         submission_id = metadata.get("submission_id")
-        if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", submission_id):
+        if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,132}", submission_id) or submission_id != f"{agent_id}-v{version or 1}":
             raise RuntimeError("Submission ID metadata is invalid")
         # Keep revision artifacts separate while a previous revision is reviewed.
         artifact = Path(str(self.config.patches_dir)) / f"{submission_id}.patch"
@@ -434,15 +434,24 @@ class RemoteAgentService:
             summary += f"; and {len(commit_subjects) - 3} more"
         messages[0].replace_header("Subject", f"[PATCH 0/{len(messages) - 1}] {summary}")
         messages[0].set_payload(cover)
+        messages[0].set_charset("utf-8")
         for message in messages:
             message.policy = policy.SMTP
             message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)
-            for message in messages:
-                box.add(message)
-            box.close()
+            try:
+                for message in messages:
+                    # mailbox.MboxMessage serialization uses an ASCII BytesGenerator
+                    # regardless of the message policy. Write each message with
+                    # SMTPUTF8 and an explicit UTF-8 BytesGenerator instead.
+                    from email.generator import BytesGenerator
+                    with output_path.open("ab") as stream:
+                        BytesGenerator(stream, policy=policy.SMTPUTF8, mangle_from_=True).flatten(message, unixfrom=True)
+                        stream.write(b"\n")
+            finally:
+                box.close()
             raw = output_path.read_bytes()
         temporary = artifact.with_name(f".{artifact.name}.{secrets.token_hex(8)}.tmp")
         temporary.write_bytes(raw)

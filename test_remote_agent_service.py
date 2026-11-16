@@ -329,7 +329,7 @@ def _published_review_fixture(tmp_path: Path, agent_id="agent-review"):
     state, patches = tmp_path / "state", tmp_path / "patches"
     (state / "submissions" / agent_id).mkdir(parents=True)
     patches.mkdir()
-    cover = "Review the important fix.\nPreserve this exact text."
+    cover = "Review the important fix — naïve café.\nPreserve this exact text: 日本語."
     (state / "submissions" / agent_id / "v1.json").write_text(json.dumps({
         "agent_id": agent_id, "submission_id": f"{agent_id}-v1", "version": 1, "ref": ref,
         "commit_id": head, "base": base, "cover_letter_message": cover,
@@ -363,6 +363,7 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     assert cover_id and all(message["Message-ID"] for message in messages[1:])
     assert all(message["In-Reply-To"] == cover_id for message in messages[1:])
     assert one["cover_letter_message"] == cover
+    assert messages[0].get_content_charset() == "utf-8"
     assert one["ref"] == "refs/agent-submissions/agent-review/v1"
     assert one["base_commit"] == base and one["submitted_head"] == head
     after = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
