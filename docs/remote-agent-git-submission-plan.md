@@ -73,7 +73,7 @@ Implementation details, tests, and exit criteria are in [the Phase 2C implementa
 
 ### Phase 3: Make email PRs the primary review interface for versioned Git submissions
 
-Split Phase 3 into independently reviewable steps. Keep the Git refs and per-version service metadata as the source of truth throughout; mboxes are only a compatibility representation for mail clients.
+The extracted [Phase 3 plan](remote-agent-git-submission-phase-3.md) contains the detailed steps and exit criteria. Keep the Git refs and per-version service metadata as the source of truth throughout; mboxes are only a compatibility representation for mail clients.
 
 #### Phase 3A: Email PR per submission version
 
