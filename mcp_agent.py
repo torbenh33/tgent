@@ -368,18 +368,18 @@ def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_m
 
 
 @mcp.tool()
-async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[str, Any]:
-    """Import available remote submissions, reporting each agent independently."""
+async def fetch_pending_agent_mail() -> dict[str, Any]:
+    """Import pending remote submission PRs and lifecycle mail into review Maildir."""
     remote = _remote_adapter()
     if remote is None:
         return {"status": "error", "message": "Remote review requires remote mode.", "agents": []}
     try:
-        patches = await asyncio.to_thread(remote.pending_patches)
+        pending = await asyncio.to_thread(remote.fetch_pending_agent_mail)
+        patches = pending["submissions"]
     except Exception as err:
         return {"status": "error", "message": str(err), "agents": []}
-    if not patches:
-        return {"status": "ok", "agents": []}
-    retrieved = await asyncio.to_thread(remote.retrieve_patches, patches, artifact_directory)
+    if not patches and not pending["events"]:
+        return {"status": "ok", "submissions": [], "events": []}
     results: list[dict[str, Any]] = []
     review_module = importlib.import_module("mcp_tgit_review")
     import hashlib
@@ -387,28 +387,45 @@ async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[s
         agent_id = metadata.get("agent_id")
         if not isinstance(agent_id, str):
             continue
-        artifact = retrieved.get(agent_id)
-        if isinstance(artifact, Exception):
-            results.append({"agent_id": agent_id, "status": "error", "message": str(artifact)})
-            continue
         try:
-            raw = artifact.read_bytes()
+            if metadata.get("error"):
+                raise ValueError(metadata["error"])
+            raw = "\\n".join(metadata.get("messages", [])).encode("utf-8", "surrogateescape")
             digest = hashlib.sha256(raw).hexdigest()
-            if digest != metadata.get("sha256"):
-                raise ValueError("Retrieved artifact digest does not match remote metadata")
+            if not metadata.get("messages"):
+                raise ValueError("Remote submission returned no serialized messages")
             imported = await asyncio.to_thread(
                 review_module.import_patch_series, raw,
                 base=metadata.get("base_commit"), submitted_head=metadata.get("submitted_head"),
                 repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
             )
-            imported = {**imported, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
+            imported = {**imported, "agent_id": agent_id, "artifact_sha256": digest}
             if imported.get("status") == "ok" and not imported.get("idempotent") and metadata.get("state") == "halted":
                 await asyncio.to_thread(_notify_halted_patch, {"agent_id": agent_id, "state": "halted"}, imported, review_module)
             results.append(imported)
         except Exception as err:
             results.append({"agent_id": agent_id, "status": "error", "message": str(err)})
-    failures = any(item.get("status") == "error" for item in results)
-    return {"status": "partial" if failures else "ok", "agents": results}
+    event_results = []
+    for event in pending["events"]:
+        try:
+            if event.get("error"):
+                raise ValueError(event["error"])
+            message = email.message_from_string(event["message"])
+            paths = review_module.DEFAULT_PATHS
+            paths.mail_spool.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for folder in ("cur", "new", "tmp"):
+                (paths.mail_spool / folder).mkdir(mode=0o700, exist_ok=True)
+            box = mailbox.Maildir(paths.mail_spool, create=True)
+            try:
+                box.add(message)
+            finally:
+                box.close()
+            await asyncio.to_thread(remote.acknowledge_event_mail, event["event_id"], message.get("Message-ID", ""))
+            event_results.append({"event_id": event["event_id"], "status": "ok"})
+        except Exception as err:
+            event_results.append({"event_id": event.get("event_id"), "status": "error", "message": str(err)})
+    failures = any(item.get("status") == "error" for item in results + event_results)
+    return {"status": "partial" if failures else "ok", "submissions": results, "events": event_results}
 
 
 @mcp.tool()

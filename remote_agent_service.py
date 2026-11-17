@@ -8,6 +8,9 @@ import fcntl
 from datetime import datetime, timezone
 import inspect
 import json
+import hashlib
+import email.message
+import email.utils
 import logging
 import os
 import secrets
@@ -136,6 +139,9 @@ class RemoteAgentService:
                 "patches": self._patches,
                 "submit_patch": self._submit_patch_protocol,
                 "pending_patches": self._pending_patches,
+                "fetch_pending_agent_mail": self._fetch_pending_agent_mail,
+                "acknowledge_event_mail": self._acknowledge_event_mail,
+                "acknowledge_event_mail": self._acknowledge_event_mail,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
                 "agent_tools": self._agent_tools,
@@ -316,13 +322,39 @@ class RemoteAgentService:
             unacknowledged_only=request["unacknowledged_only"],
         )
 
+    def _record_lifecycle_event(self, kind: str, agent_id: str, details: dict[str, Any]) -> None:
+        events_dir = Path(str(self.config.state_dir)) / "lifecycle-events"
+        events_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        event_id = hashlib.sha256(f"{kind}:{agent_id}:{json.dumps(details, sort_keys=True)}".encode()).hexdigest()
+        path = events_dir / f"{event_id}.json"
+        if path.exists():
+            return
+        status = self.controller.store.get_metadata(agent_id)
+        event = {"event_id": event_id, "kind": kind, "agent_id": agent_id, "event_time": datetime.now(timezone.utc).isoformat(), "state": status.get("state"), "details": details}
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(event, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+
+    def _acknowledge_event_mail(self, request):
+        event_id = request["event_id"]
+        path = Path(str(self.config.state_dir)) / "lifecycle-events" / f"{event_id}.json"
+        event = json.loads(path.read_text(encoding="utf-8"))
+        event["message_id"] = request["message_id"]
+        event["materialized_at"] = datetime.now(timezone.utc).isoformat()
+        path.write_text(json.dumps(event, ensure_ascii=False), encoding="utf-8")
+        return {"event_id": event_id, "materialized": True}
+
     async def _continue(self, request):
         agent_id = request["agent_id"]
         messages = [dict(message) for message in request["messages"]]
-        return await self.controller.continue_agent(agent_id, messages)
+        result = await self.controller.continue_agent(agent_id, messages)
+        self._record_lifecycle_event("continuation", agent_id, {})
+        return result
 
     async def _stop(self, request):
-        return await self.controller.stop_agent(request["agent_id"])
+        result = await self.controller.stop_agent(request["agent_id"])
+        self._record_lifecycle_event("stop", request["agent_id"], {"result": result})
+        return result
 
     async def _logs(self, request):
         return await self.controller.get_agent_log(request["agent_id"], max_bytes=request["max_bytes"])
@@ -481,8 +513,13 @@ class RemoteAgentService:
         return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": submission_id, "ref": ref, "state": registered.get("state")}
 
     async def _pending_patches(self, request):
-        """Enumerate and materialize pending submissions, retaining per-item errors."""
-        patches = []
+        """Compatibility alias for the unified pending mail collection."""
+        result = await self._fetch_pending_agent_mail(request)
+        return {"patches": result["submissions"]}
+
+    async def _fetch_pending_agent_mail(self, request):
+        """Return serialized submission and lifecycle messages for local Maildir import."""
+        submissions = []
         metadata_dir = Path(str(self.config.state_dir)) / "submissions"
         entries = []
         for path in sorted(metadata_dir.glob("*.json")):
@@ -499,10 +536,38 @@ class RemoteAgentService:
                 agent_id = raw.get("agent_id") if isinstance(raw, dict) else None
                 if not isinstance(agent_id, str):
                     raise RuntimeError("Submission metadata identity is invalid")
-                patches.append(self._generate_review_patch(agent_id, version))
+                generated = self._generate_review_patch(agent_id, version)
+                mbox_path = Path(str(self.config.patches_dir)) / str(generated["artifact"])
+                import mailbox
+                box = mailbox.mbox(mbox_path, create=False)
+                try:
+                    messages = [message.as_bytes() for message in box]
+                finally:
+                    box.close()
+                submissions.append({**generated, "messages": [message.decode("utf-8", "surrogateescape") for message in messages]})
             except Exception as err:
-                patches.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
-        return {"patches": patches}
+                submissions.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
+        events = []
+        events_dir = Path(str(self.config.state_dir)) / "lifecycle-events"
+        if events_dir.is_dir():
+            for event_path in sorted(events_dir.glob("*.json")):
+                try:
+                    event = json.loads(event_path.read_text(encoding="utf-8"))
+                    if event.get("materialized_at"):
+                        continue
+                    if "message" not in event:
+                        message = email.message.EmailMessage()
+                        message["Message-ID"] = f"<{event['event_id']}@tgit-agent.local>"
+                        message["From"] = "agent <agent@localhost>"
+                        message["To"] = "operator"
+                        message["Date"] = email.utils.formatdate(localtime=True)
+                        message["Subject"] = f"[tgit-agent] {event['kind']}: {event['agent_id']}"
+                        message.set_content(f"Event: {event['kind']}\\nEvent ID: {event['event_id']}\\nTime: {event['event_time']}\\nAgent: {event['agent_id']}\\nState: {event['state']}\\nDetails: {json.dumps(event.get('details', {}), ensure_ascii=False)}\\n")
+                        event["message"] = message.as_string()
+                    events.append(event)
+                except Exception as err:
+                    events.append({"event_id": event_path.stem, "error": str(err)})
+        return {"submissions": submissions, "events": events}
 
     async def _patches(self, request):
         try:
