@@ -356,12 +356,14 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     messages = _parse_mbox(first_bytes)
     assert len(messages) == 3
     assert messages[0].get_content().rstrip("\n") == cover
-    assert messages[0]["Subject"].startswith("[PATCH 0/2] submitted change; follow-up change")
-    assert messages[1]["Subject"].startswith("[PATCH 1/2] submitted change")
-    assert messages[2]["Subject"].startswith("[PATCH 2/2] follow-up change")
+    assert messages[0]["Subject"].startswith("[PATCH agent-review-v1 0/2] submitted change; follow-up change")
+    assert messages[1]["Subject"].startswith("[PATCH agent-review-v1 1/2] [PATCH 1/2] submitted change")
+    assert messages[2]["Subject"].startswith("[PATCH agent-review-v1 2/2] [PATCH 2/2] follow-up change")
     cover_id = messages[0]["Message-ID"]
     assert cover_id and all(message["Message-ID"] for message in messages[1:])
+    assert len({message["Message-ID"] for message in messages}) == 3
     assert all(message["In-Reply-To"] == cover_id for message in messages[1:])
+    assert all(cover_id in message["References"] for message in messages[1:])
     assert one["cover_letter_message"] == cover
     assert messages[0].get_content_charset() == "utf-8"
     assert one["ref"] == "refs/agent-submissions/agent-review/v1"
@@ -370,6 +372,103 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
              subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True).stdout,
              (host / "tracked.txt").read_bytes())
     assert after == before
+
+
+def test_remote_submission_versions_have_independent_stable_threads(tmp_path):
+    from mcp_tgit_review import _parse_mbox
+
+    service, host, cover_one, base, _head = _published_review_fixture(tmp_path)
+    first = service._generate_review_patch("agent-review", 1)
+    first_raw = (service.config.patches_dir / first["artifact"]).read_bytes()
+
+    (host / "tracked.txt").write_text("version two\n")
+    subprocess.run(("git", "-C", str(host), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(host), "commit", "-qm", "version two change"), check=True)
+    head_two = subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    ref_two = "refs/agent-submissions/agent-review/v2"
+    mirror = Path(service.controller.store.get_metadata("agent-review")["project_mirror"])
+    subprocess.run(("git", "--git-dir", str(mirror), "fetch", str(host), f"{head_two}:{ref_two}"), check=True, capture_output=True)
+    metadata_path = service.config.state_dir / "submissions" / "agent-review" / "v2.json"
+    cover_two = "Second version\nDistinct cover letter."
+    metadata_path.write_text(json.dumps({
+        "agent_id": "agent-review", "submission_id": "agent-review-v2", "version": 2,
+        "ref": ref_two, "commit_id": head_two, "base": base,
+        "cover_letter_message": cover_two,
+    }))
+    second = service._generate_review_patch("agent-review", 2)
+    second_raw = (service.config.patches_dir / second["artifact"]).read_bytes()
+    assert first_raw == (service.config.patches_dir / first["artifact"]).read_bytes()
+    assert second["artifact"] != first["artifact"]
+    messages_one, messages_two = _parse_mbox(first_raw), _parse_mbox(second_raw)
+    ids_one = {message["Message-ID"] for message in messages_one}
+    ids_two = {message["Message-ID"] for message in messages_two}
+    assert len(ids_one) == len(messages_one) and len(ids_two) == len(messages_two)
+    assert ids_one.isdisjoint(ids_two)
+    assert cover_one == messages_one[0].get_content().rstrip("\n")
+    assert cover_two == messages_two[0].get_content().rstrip("\n")
+    assert all("agent-review-v1" in message["Subject"] for message in messages_one)
+    assert all("agent-review-v2" in message["Subject"] for message in messages_two)
+    for messages in (messages_one, messages_two):
+        parent = messages[0]["Message-ID"]
+        assert all(message["In-Reply-To"] == parent for message in messages[1:])
+        assert all(parent in message["References"] for message in messages[1:])
+
+
+def test_remote_versions_import_idempotently_with_version_scoped_reply_association(tmp_path):
+    import hashlib
+    import email
+    from email import policy
+    from email.message import EmailMessage
+    from mcp_tgit_review import ReviewPaths, _parse_mbox, _reviews, import_patch_series
+
+    service, host, _cover_one, base, head_one = _published_review_fixture(tmp_path)
+    first = service._generate_review_patch("agent-review", 1)
+    first_raw = (service.config.patches_dir / first["artifact"]).read_bytes()
+    (host / "tracked.txt").write_text("version two\n")
+    subprocess.run(("git", "-C", str(host), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(host), "commit", "-qm", "version two change"), check=True)
+    head_two = subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    ref_two = "refs/agent-submissions/agent-review/v2"
+    mirror = Path(service.controller.store.get_metadata("agent-review")["project_mirror"])
+    subprocess.run(("git", "--git-dir", str(mirror), "fetch", str(host), f"{head_two}:{ref_two}"), check=True, capture_output=True)
+    cover_two = "Second version cover letter."
+    (service.config.state_dir / "submissions" / "agent-review" / "v2.json").write_text(json.dumps({
+        "agent_id": "agent-review", "submission_id": "agent-review-v2", "version": 2,
+        "ref": ref_two, "commit_id": head_two, "base": base,
+        "cover_letter_message": cover_two,
+    }))
+    second = service._generate_review_patch("agent-review", 2)
+    second_raw = (service.config.patches_dir / second["artifact"]).read_bytes()
+    paths = ReviewPaths(tmp_path / "review-state", tmp_path / "review-series", tmp_path / "review-mail")
+    def import_version(raw, version, head):
+        return import_patch_series(raw, base=base, submitted_head=head, repo_path=str(host),
+            series_id=f"remote-agent-review-v{version}", artifact_sha256=hashlib.sha256(raw).hexdigest(), paths=paths)
+    one = import_version(first_raw, 1, head_one)
+    assert one["status"] == "ok"
+    retry_one = import_version(first_raw, 1, head_one)
+    assert retry_one["status"] == "ok" and retry_one["idempotent"]
+    two = import_version(second_raw, 2, head_two)
+    assert two["status"] == "ok"
+    records = _reviews(paths)
+    assert len(records) == 0
+    assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
+    for version in (1, 2):
+        messages = _parse_mbox(first_raw if version == 1 else second_raw)
+        reply = EmailMessage()
+        reply["Message-ID"] = f"<review-v{version}@example.invalid>"
+        reply["In-Reply-To"] = messages[1]["Message-ID"]
+        reply["References"] = f"{messages[0]['Message-ID']} {messages[1]['Message-ID']}"
+        reply["Subject"] = f"Re: {messages[1]['Subject']}"
+        reply.set_content(f"Review for v{version}")
+        with paths.mail_spool.joinpath(f"reply-v{version}.eml").open("wb") as output:
+            output.write(reply.as_bytes(policy=policy.SMTP))
+    records = _reviews(paths)
+    assert len(records) == 2
+    assert {record["series_id"] for record in records} == {"remote-agent-review-v1", "remote-agent-review-v2"}
+    assert {record["revision"] for record in records} == {1}
+    again = import_version(first_raw, 1, head_one)
+    assert again["idempotent"] and len(_reviews(paths)) == 2
+    assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
 
 
 def test_halted_patch_notification_has_real_newlines(tmp_path, monkeypatch):

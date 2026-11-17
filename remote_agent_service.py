@@ -432,9 +432,29 @@ class RemoteAgentService:
         summary = "; ".join(commit_subjects[:3]) or "patch series"
         if len(commit_subjects) > 3:
             summary += f"; and {len(commit_subjects) - 3} more"
-        messages[0].replace_header("Subject", f"[PATCH 0/{len(messages) - 1}] {summary}")
+        messages[0].replace_header("Subject", f"[PATCH {submission_id} 0/{len(messages) - 1}] {summary}")
         messages[0].set_payload(cover)
         messages[0].set_charset("utf-8")
+
+        # Commit-derived Message-IDs can repeat when a later version reuses commits.
+        # Namespace them by submission ID so reply association is always version-specific.
+        message_ids = []
+        for index, message in enumerate(messages):
+            old_id = message.get("Message-ID", "")
+            token = hashlib.sha256(f"{submission_id}:{index}:{old_id}".encode()).hexdigest()[:32]
+            new_id = f"<{token}@tgit-agent.local>"
+            if message.get("Message-ID"):
+                message.replace_header("Message-ID", new_id)
+            else:
+                message["Message-ID"] = new_id
+            message_ids.append(new_id)
+        for index, message in enumerate(messages[1:], 1):
+            message.replace_header("Subject", f"[PATCH {submission_id} {index}/{len(messages) - 1}] {message.get('Subject', '')}")
+            for header in ("In-Reply-To", "References"):
+                if message.get(header):
+                    del message[header]
+            message["In-Reply-To"] = message_ids[0]
+            message["References"] = message_ids[0]
         for message in messages:
             message.policy = policy.SMTP
             message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]

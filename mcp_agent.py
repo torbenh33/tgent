@@ -325,9 +325,9 @@ async def review_remote_agent(agent_id: str, artifact_directory: str) -> dict[st
     result = await asyncio.to_thread(
         import_review, raw, base=metadata.get("base_commit"),
         submitted_head=metadata.get("submitted_head"), repo_path=str(_PROJECT_ROOT),
-        series_id=f"remote-{agent_id}", artifact_sha256=digest,
+        series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
     )
-    return {**result, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
+    return {**result, "agent_id": agent_id, "version": metadata.get("version", 1), "submission_id": metadata.get("submission_id"), "ref": metadata.get("ref"), "artifact": str(artifact), "artifact_sha256": digest}
 
 
 def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_module: Any) -> None:
@@ -399,7 +399,7 @@ async def import_pending_remote_agent_patches(artifact_directory: str) -> dict[s
             imported = await asyncio.to_thread(
                 review_module.import_patch_series, raw,
                 base=metadata.get("base_commit"), submitted_head=metadata.get("submitted_head"),
-                repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}", artifact_sha256=digest,
+                repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
             )
             imported = {**imported, "agent_id": agent_id, "artifact": str(artifact), "artifact_sha256": digest}
             if imported.get("status") == "ok" and not imported.get("idempotent") and metadata.get("state") == "halted":
