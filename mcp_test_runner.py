@@ -18,7 +18,7 @@ def _validate_module_target(modpath: str):
     return None
 
 @mcp.resource("unittests://{modpath}")
-async def run_unittests(modpath: str, timeout_seconds: int = 180) -> dict:
+async def run_unittests(modpath: str) -> dict:
     """Run unittest discovery for a given test module file.
        + some stuff"""
     error = _validate_module_target(modpath)
@@ -34,7 +34,7 @@ async def run_unittests(modpath: str, timeout_seconds: int = 180) -> dict:
         "discover",
         "-s",
         test_dir,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=30,
     )
 
 async def _run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
@@ -67,15 +67,15 @@ async def _run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
 
 
 @mcp.resource("pytest://{project_dir}")
-async def run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
+async def run_pytest(project_dir: str) -> dict:
     """Run pytest now and return the result with a unique ID and execution timestamps."""
-    return await _run_pytest(project_dir, timeout_seconds=timeout_seconds)
+    return await _run_pytest(project_dir, timeout_seconds=30)
 
 
 @mcp.resource("pytest://")
-async def run_pytest_default(timeout_seconds: int = 180) -> dict:
+async def run_pytest_default() -> dict:
     """Run pytest now in the current directory and annotate this fresh execution."""
-    return await _run_pytest(".", timeout_seconds=timeout_seconds)
+    return await _run_pytest(".", timeout_seconds=30)
 
 
 @mcp.resource("doctests://{modpath}")
