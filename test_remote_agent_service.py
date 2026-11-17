@@ -516,6 +516,17 @@ def test_review_mbox_artifact_identity_uses_submission_version(tmp_path):
     assert (service.config.patches_dir / result["artifact"]).is_file()
 
 
+def test_legacy_submission_without_explicit_id_is_supported(tmp_path):
+    service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
+    versioned = service.config.state_dir / "submissions" / "agent-review" / "v1.json"
+    legacy = json.loads(versioned.read_text())
+    legacy.pop("submission_id", None)
+    legacy_path = service.config.state_dir / "submissions" / "agent-review.json"
+    legacy_path.write_text(json.dumps(legacy))
+    result = service._generate_review_patch("agent-review")
+    assert result["submission_id"] == "agent-review-v1"
+
+
 def test_pending_review_missing_and_malformed_metadata_errors(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     with pytest.raises(RuntimeError, match="metadata is missing"):
@@ -546,7 +557,8 @@ def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     events.mkdir()
     (events / "event-1.json").write_text(json.dumps({"event_id": "event-1", "kind": "stop", "agent_id": "agent-review", "event_time": "now", "state": "stopped", "details": {}}))
     result = asyncio.run(service._fetch_pending_agent_mail({}))
-    assert result["submissions"][0]["messages"]
+    assert result["submissions"][0]["mbox"]
+    assert result["submissions"][0]["mbox"].encode("utf-8", "surrogateescape") == (service.config.patches_dir / result["submissions"][0]["artifact"]).read_bytes()
     assert result["events"][0]["message"]
     assert "Message-ID" in result["events"][0]["message"]
 
