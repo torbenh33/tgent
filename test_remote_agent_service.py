@@ -540,6 +540,17 @@ def test_pending_review_bulk_returns_success_and_per_item_errors(tmp_path):
     assert "error" in failure
 
 
+def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
+    service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
+    events = service.config.state_dir / "lifecycle-events"
+    events.mkdir()
+    (events / "event-1.json").write_text(json.dumps({"event_id": "event-1", "kind": "stop", "agent_id": "agent-review", "event_time": "now", "state": "stopped", "details": {}}))
+    result = asyncio.run(service._fetch_pending_agent_mail({}))
+    assert result["submissions"][0]["messages"]
+    assert result["events"][0]["message"]
+    assert "Message-ID" in result["events"][0]["message"]
+
+
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
     import asyncio
     from remote_agent_service import RemoteAgentService

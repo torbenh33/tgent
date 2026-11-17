@@ -150,13 +150,20 @@ class RemoteAgentAdapter:
         """Record operator rejection of an inactive submitted patch."""
         return self._request("nack_patch", agent_id=agent_id, reason=reason)
 
+    def fetch_pending_agent_mail(self) -> dict[str, list[dict[str, object]]]:
+        """Fetch serialized submission and lifecycle email for local import."""
+        result = self._request("fetch_pending_agent_mail")
+        if not isinstance(result.get("submissions"), list) or not isinstance(result.get("events"), list):
+            raise RemoteAgentAdapterError("Remote pending agent mail response is invalid")
+        return {"submissions": result["submissions"], "events": result["events"]}
+
+    def acknowledge_event_mail(self, event_id: str, message_id: str) -> dict[str, object]:
+        """Mark lifecycle mail materialized after successful local Maildir import."""
+        return self._request("acknowledge_event_mail", event_id=event_id, message_id=message_id)
+
     def pending_patches(self) -> list[dict[str, object]]:
-        """Enumerate pending patch metadata with one remote protocol call."""
-        result = self._request("pending_patches")
-        patches = result.get("patches")
-        if not isinstance(patches, list):
-            raise RemoteAgentAdapterError("Remote pending patches response is invalid")
-        return patches
+        """Compatibility wrapper for pending submission metadata."""
+        return self._request("pending_patches").get("patches", [])
 
     def retrieve_patches(self, patches: list[dict[str, object]], destination: str | os.PathLike[str]) -> dict[str, Path | Exception]:
         """Transfer validated artifact set in one rsync invocation."""
