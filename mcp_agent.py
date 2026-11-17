@@ -390,10 +390,11 @@ async def fetch_pending_agent_mail() -> dict[str, Any]:
         try:
             if metadata.get("error"):
                 raise ValueError(metadata["error"])
-            raw = "\\n".join(metadata.get("messages", [])).encode("utf-8", "surrogateescape")
+            serialized = metadata.get("mbox")
+            if not isinstance(serialized, str) or not serialized:
+                raise ValueError("Remote submission returned no serialized mbox")
+            raw = serialized.encode("utf-8", "surrogateescape")
             digest = hashlib.sha256(raw).hexdigest()
-            if not metadata.get("messages"):
-                raise ValueError("Remote submission returned no serialized messages")
             imported = await asyncio.to_thread(
                 review_module.import_patch_series, raw,
                 base=metadata.get("base_commit"), submitted_head=metadata.get("submitted_head"),

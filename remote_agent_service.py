@@ -291,7 +291,11 @@ class RemoteAgentService:
             subprocess.run(["git", "-C", str(work), "update-ref", "-d", temporary_ref], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(work), "checkout", "--detach", base], check=True, capture_output=True)
         subprocess.run(["rsync", "-a", "--checksum", "--exclude", ".git", "--delete", str(checkout) + "/", str(work) + "/"], check=True, capture_output=True)
-        return await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository, _project_name=name)
+        result = await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository, _project_name=name)
+        agent_id = result.get("agent_id")
+        if isinstance(agent_id, str):
+            self._record_lifecycle_event("start", agent_id, {})
+        return result
 
     async def _status(self, request):
         return await self.controller.get_status(request["agent_id"])
@@ -426,6 +430,10 @@ class RemoteAgentService:
         if not isinstance(base, str) or not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", base) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
             raise RuntimeError("Submission base or commit metadata is invalid")
         submission_id = metadata.get("submission_id")
+        # Pre-versioned records predate the explicit ID field. Their stable
+        # compatibility identity is the agent's first submission thread.
+        if version is None and submission_id is None:
+            submission_id = f"{agent_id}-v1"
         if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,132}", submission_id) or submission_id != f"{agent_id}-v{version or 1}":
             raise RuntimeError("Submission ID metadata is invalid")
         # Keep revision artifacts separate while a previous revision is reviewed.
@@ -544,7 +552,8 @@ class RemoteAgentService:
                     messages = [message.as_bytes() for message in box]
                 finally:
                     box.close()
-                submissions.append({**generated, "messages": [message.decode("utf-8", "surrogateescape") for message in messages]})
+                # Preserve exact bytes and mbox separators across JSON transport.
+                submissions.append({**generated, "version": version or 1, "mbox": mbox_path.read_bytes().decode("utf-8", "surrogateescape")})
             except Exception as err:
                 submissions.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
         events = []
