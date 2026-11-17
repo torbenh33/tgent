@@ -173,60 +173,73 @@ def test_remote_acknowledgement_delegates_state_validation_to_controller() -> No
         (2, "change one\nchange two\n", "Agent history: implemented and verified the changes.", "Agent history: implemented and verified the changes."),
     ],
 )
-@pytest.mark.skip(reason="Remote submission now publishes Git refs; mbox submission assertions are obsolete in Phase 1")
 def test_submit_patch_generates_and_stores_mbox_without_local_review_export(
     tmp_path: Path, patch_count: int, subjects: str, history_summary: str | None, expected_blurb: str
 ) -> None:
-    class Snapshot:
-        base_commit = "base-sha"
-        project_root = tmp_path
-        root = tmp_path / "agent-123"
+    """Submission publishes Git refs and metadata, leaving review mail untouched."""
+    from types import SimpleNamespace
 
+    source = tmp_path / "agent-123"
+    source.mkdir()
+    def git(*args: str, cwd: Path = source) -> str:
+        return subprocess.run(("git", "-C", str(cwd), *args), check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    (source / "file.txt").write_text("base\n")
+    git("add", "file.txt")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    for subject in subjects.splitlines():
+        (source / "file.txt").write_text(f"{subject}\n")
+        git("add", "file.txt")
+        git("commit", "-qm", subject)
+    head = git("rev-parse", "HEAD")
+    mirror = tmp_path / "project-mirror"
+    subprocess.run(("git", "init", "--bare", "-q", str(mirror)), check=True)
+    git("push", str(mirror), f"{base}:refs/heads/base")
+    registered = {"snapshot_project": str(source), "snapshot_root": str(tmp_path), "base_commit": base, "project_mirror": str(mirror)}
+    class Store:
+        def get_metadata(self, agent_id):
+            assert agent_id == "agent-123"
+            return registered
+    state = tmp_path / "state"
+    review_mail = tmp_path / "review.mbox"
+    review_mail.write_bytes(b"operator review mail\n")
     service = RemoteAgentService.__new__(RemoteAgentService)
-    patches = tmp_path / "patches"
-    patches.mkdir()
-    service.config = type("Config", (), {"patches_dir": patches})()
-    service.controller = type("Controller", (), {"store": type("Store", (), {
-        "get_cached_summary": lambda _store, _agent_id: history_summary,
-    })()})()
-    calls = []
+    service.config = SimpleNamespace(project_root_dir=tmp_path, state_dir=state, patches_dir=tmp_path / "patches")
+    service.controller = SimpleNamespace(store=Store())
 
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if "log" in argv:
-            return subprocess.CompletedProcess(argv, 0, subjects)
-        messages = [b"From abc\nSubject: [PATCH 0/1] *** SUBJECT HERE ***\n\n*** BLURB HERE ***\n"]
-        messages.extend(
-            f"From p{index}\nSubject: [PATCH {index}/{patch_count}] change\n".encode()
-            for index in range(1, patch_count + 1)
-        )
-        return subprocess.CompletedProcess(argv, 0, b"\n".join(messages))
+    def submit(commit: str, cover: str) -> dict:
+        return asyncio.run(service._submit_patch_protocol({
+            "agent_id": "agent-123", "base_commit": base, "head_commit": commit,
+            "cover_letter_message": cover,
+        }))
 
-    import remote_agent_service
-    original = remote_agent_service.subprocess.run
-    remote_agent_service.subprocess.run = fake_run
-    try:
-        result = asyncio.run(service._submit_patch(Snapshot(), {"head_commit": "head-sha"}))
-    finally:
-        remote_agent_service.subprocess.run = original
+    first = submit(head, expected_blurb)
+    assert first["status"] == "ok"
+    assert first["ref"] == "refs/agent-submissions/agent-123/v1"
+    assert first["version"] == 1
+    saved = json.loads((state / "submissions" / "agent-123" / "v1.json").read_text())
+    assert saved["cover_letter_message"] == expected_blurb
+    assert saved["base"] == base and saved["commit_id"] == head
+    assert git("rev-parse", first["ref"], cwd=mirror) == head
 
-    assert result["status"] == "ok"
-    assert result["patch_artifact"] == "agent-123.patch"
-    artifact = (patches / "agent-123.patch").read_bytes()
-    # Serializing the parsed mbox rewrites envelope separators to mailbox-generated
-    # `From ` lines, so assert the stable mbox framing rather than git's input bytes.
-    assert artifact.startswith(b"From ")
-    assert artifact.count(b"\nFrom ") == patch_count
-    assert artifact.count(b"Reply-To: agent <agent@localhost>") == patch_count + 1
-    from mcp_tgit_review import _parse_mbox
-    messages = _parse_mbox(artifact)
-    expected_subject = "change one" if patch_count == 1 else "change one; change two"
-    assert messages[0]["Subject"] == f"[PATCH 0/{patch_count}] {expected_subject}"
-    assert expected_blurb in messages[0].get_content()
-    assert "*** SUBJECT HERE ***" not in messages[0]["Subject"]
-    assert "*** BLURB HERE ***" not in messages[0].get_content()
-    assert len(messages) == patch_count + 1
-    assert "format-patch" in calls[0]
+    # A subsequent submission advances to a distinct service-managed version.
+    (source / "file.txt").write_text("follow-up\n")
+    git("add", "file.txt")
+    git("commit", "-qm", "follow-up")
+    followup = git("rev-parse", "HEAD")
+    second = submit(followup, "Follow-up cover letter")
+    assert second["ref"] == "refs/agent-submissions/agent-123/v2"
+    assert second["version"] == 2
+    saved_v2 = json.loads((state / "submissions" / "agent-123" / "v2.json").read_text())
+    assert saved_v2["cover_letter_message"] == "Follow-up cover letter"
+    assert saved_v2["base"] == base and saved_v2["commit_id"] == followup
+    assert git("rev-parse", second["ref"], cwd=mirror) == followup
+    assert not service.config.patches_dir.exists()
+    assert review_mail.read_bytes() == b"operator review mail\n"
 
 
 def test_submit_patch_fetches_registered_repo_to_mirror_and_saves_metadata(tmp_path: Path) -> None:
