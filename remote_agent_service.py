@@ -433,8 +433,10 @@ class RemoteAgentService:
         if len(commit_subjects) > 3:
             summary += f"; and {len(commit_subjects) - 3} more"
         messages[0].replace_header("Subject", f"[PATCH {submission_id} 0/{len(messages) - 1}] {summary}")
-        messages[0].set_payload(cover)
-        messages[0].set_charset("utf-8")
+        import quopri
+        messages[0].set_payload(quopri.encodestring(cover.encode("utf-8")).decode("ascii"))
+        messages[0]["Content-Type"] = 'text/plain; charset="utf-8"'
+        messages[0]["Content-Transfer-Encoding"] = "quoted-printable"
 
         # Commit-derived Message-IDs can repeat when a later version reuses commits.
         # Namespace them by submission ID so reply association is always version-specific.

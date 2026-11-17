@@ -379,6 +379,10 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     assert all(cover_id in message["References"] for message in messages[1:])
     assert one["cover_letter_message"] == cover
     assert messages[0].get_content_charset() == "utf-8"
+    assert messages[0]["Content-Transfer-Encoding"].lower() == "quoted-printable"
+    assert b"Review the important fix" in first_bytes
+    assert messages[0].get_payload(decode=True).decode("utf-8").rstrip("\n") == cover
+    assert "日本語" in messages[0].get_content()
     assert one["ref"] == "refs/agent-submissions/agent-review/v1"
     assert one["base_commit"] == base and one["submitted_head"] == head
     after = (subprocess.run(("git", "-C", str(host), "status", "--porcelain=v2", "--branch"), check=True, capture_output=True).stdout,
@@ -505,10 +509,10 @@ def test_review_mbox_artifact_identity_uses_submission_version(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     metadata_path = service.config.state_dir / "submissions" / "agent-review" / "v1.json"
     metadata = json.loads(metadata_path.read_text())
-    metadata["submission_id"] = "agent-review-revision-2"
+    metadata["submission_id"] = "agent-review-v1"
     metadata_path.write_text(json.dumps(metadata))
     result = service._generate_review_patch("agent-review", 1)
-    assert result["artifact"] == "agent-review-revision-2.patch"
+    assert result["artifact"] == "agent-review-v1.patch"
     assert (service.config.patches_dir / result["artifact"]).is_file()
 
 
