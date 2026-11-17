@@ -18,7 +18,7 @@ def _validate_module_target(modpath: str):
     return None
 
 @mcp.resource("unittests://{modpath}")
-async def run_unittests(modpath: str) -> dict:
+async def run_unittests(modpath: str, timeout_seconds: int = 180) -> dict:
     """Run unittest discovery for a given test module file.
        + some stuff"""
     error = _validate_module_target(modpath)
@@ -34,15 +34,16 @@ async def run_unittests(modpath: str) -> dict:
         "discover",
         "-s",
         test_dir,
+        timeout_seconds=timeout_seconds,
     )
 
-async def _run_pytest(project_dir: str) -> dict:
+async def _run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
     """Run pytest and annotate the result with this invocation's identity and context."""
     target_dir = project_dir.strip() if isinstance(project_dir, str) and project_dir.strip() else "."
     started_at = datetime.now(timezone.utc)
     run_id = str(uuid.uuid4())
     command = [sys.executable, "-m", "pytest", "-vv", "--rootdir", target_dir, target_dir]
-    result = await run_subprocess(*command)
+    result = await run_subprocess(*command, timeout_seconds=timeout_seconds)
     completed_at = datetime.now(timezone.utc)
     returncode = result.get("returncode")
     if returncode == 0:
@@ -66,25 +67,25 @@ async def _run_pytest(project_dir: str) -> dict:
 
 
 @mcp.resource("pytest://{project_dir}")
-async def run_pytest(project_dir: str) -> dict:
+async def run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
     """Run pytest now and return the result with a unique ID and execution timestamps."""
-    return await _run_pytest(project_dir)
+    return await _run_pytest(project_dir, timeout_seconds=timeout_seconds)
 
 
 @mcp.resource("pytest://")
-async def run_pytest_default() -> dict:
+async def run_pytest_default(timeout_seconds: int = 180) -> dict:
     """Run pytest now in the current directory and annotate this fresh execution."""
-    return await _run_pytest(".")
+    return await _run_pytest(".", timeout_seconds=timeout_seconds)
 
 
 @mcp.resource("doctests://{modpath}")
-async def run_doctests(modpath: str) -> dict:
+async def run_doctests(modpath: str, timeout_seconds: int = 180) -> dict:
     """Run doctests for a given module file."""
     error = _validate_module_target(modpath)
     if error is not None:
         return error
 
-    return await run_subprocess(sys.executable, "-m", "doctest", "-v", modpath)
+    return await run_subprocess(sys.executable, "-m", "doctest", "-v", modpath, timeout_seconds=timeout_seconds)
 
 
 if __name__ == "__main__":
