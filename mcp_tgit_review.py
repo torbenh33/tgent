@@ -470,6 +470,12 @@ def import_patch_series(
         return {"status": "error", "message": "Series belongs to a different repository."}
     provenance = manifest.setdefault("remote_provenance", [])
     if any(item.get("artifact_sha256") == artifact_sha256 for item in provenance):
+        # The manifest may have been committed before a prior Maildir write failed.
+        # Retry delivery; Message-ID deduplication makes this safe.
+        try:
+            _import_patches_to_maildir(messages, paths)
+        except (OSError, mailbox.Error) as err:
+            return {"status": "error", "message": f"Could not import mbox messages: {err}"}
         return {"status": "ok", "series_id": series_id, "revision": next((item["revision"] for item in manifest["revisions"] if item.get("artifact_sha256") == artifact_sha256), None), "idempotent": True}
     revision_number = len(manifest["revisions"]) + 1
     directory = manifest_path.parent

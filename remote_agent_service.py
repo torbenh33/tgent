@@ -571,7 +571,7 @@ class RemoteAgentService:
                         message["To"] = "operator"
                         message["Date"] = email.utils.formatdate(localtime=True)
                         message["Subject"] = f"[tgit-agent] {event['kind']}: {event['agent_id']}"
-                        message.set_content(f"Event: {event['kind']}\\nEvent ID: {event['event_id']}\\nTime: {event['event_time']}\\nAgent: {event['agent_id']}\\nState: {event['state']}\\nDetails: {json.dumps(event.get('details', {}), ensure_ascii=False)}\\n")
+                        message.set_content(f"Event: {event['kind']}\nEvent ID: {event['event_id']}\nTime: {event['event_time']}\nAgent: {event['agent_id']}\nState: {event['state']}\nDetails: {json.dumps(event.get('details', {}), ensure_ascii=False)}\n")
                         event["message"] = message.as_string()
                     events.append(event)
                 except Exception as err:
