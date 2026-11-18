@@ -396,6 +396,7 @@ class RemoteAgentService:
     def _generate_review_patch(self, agent_id: str, version: int | None = None) -> dict[str, Any]:
         """Generate the compatibility mbox afresh from a published submission ref."""
         import hashlib
+        import mailbox
         identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
         metadata_dir = Path(str(self.config.state_dir)) / "submissions"
         metadata_path = metadata_dir / f"{identity}.json" if version is None else metadata_dir / identity / f"v{version}.json"
@@ -440,6 +441,19 @@ class RemoteAgentService:
         artifact = Path(str(self.config.patches_dir)) / f"{submission_id}.patch"
         if artifact.is_symlink():
             raise RuntimeError("Generated patch path must not be a symlink")
+        # Reuse an existing compatibility artifact when it still represents this
+        # submission. Regenerating format-patch changes Date/Message-IDs and makes
+        # every routine fetch look like a new review revision.
+        if artifact.is_file():
+            cached = artifact.read_bytes()
+            try:
+                cached_messages = mailbox.mbox(artifact, create=False)
+                valid_cache = len(cached_messages) >= 2 and all(message.get("Message-ID") for message in cached_messages)
+                cached_messages.close()
+            except (OSError, mailbox.Error):
+                valid_cache = False
+            if valid_cache:
+                return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(cached), "sha256": hashlib.sha256(cached).hexdigest(), "base_commit": base, "submitted_head": head, "cover_letter_message": cover if isinstance((cover := metadata.get("cover_letter_message")), str) else "", "submission_id": submission_id, "ref": ref, "state": registered.get("state")}
         generated = subprocess.run(("git", "--git-dir", str(mirror), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{base}..{head}"), capture_output=True, timeout=60)
         if generated.returncode or not generated.stdout:
             raise RuntimeError("Could not generate review mbox from submitted commit series")
@@ -450,7 +464,6 @@ class RemoteAgentService:
         from email import policy
         from email.parser import BytesParser
         from email.generator import BytesGenerator
-        import mailbox
         import tempfile
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             input_path = Path(temporary_directory) / "generated.mbox"

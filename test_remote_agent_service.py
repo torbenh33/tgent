@@ -470,6 +470,20 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     finally:
         box.close()
     assert set(first_ids) == {message["Message-ID"] for message in _parse_mbox(first_raw)}
+    # Lifecycle and submission mail share the exact incoming Maildir.
+    lifecycle = EmailMessage()
+    lifecycle["Message-ID"] = "<event-1@tgit-agent.local>"
+    lifecycle["Subject"] = "[tgit-agent] stop"
+    lifecycle.set_content("Event: stop")
+    from mcp_tgit_review import _import_patches_to_maildir
+    _import_patches_to_maildir([lifecycle], paths)
+    _import_patches_to_maildir([lifecycle], paths)
+    box = mailbox.Maildir(paths.mail_spool, create=False)
+    try:
+        combined_ids = [box.get_message(key).get("Message-ID") for key in box.iterkeys()]
+    finally:
+        box.close()
+    assert set(combined_ids) == set(first_ids) | {"<event-1@tgit-agent.local>"}
     retry_one = import_version(first_raw, 1, head_one)
     assert retry_one["status"] == "ok" and retry_one["idempotent"]
     box = mailbox.Maildir(paths.mail_spool, create=False)
@@ -477,11 +491,11 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
         retried_ids = [box.get_message(key).get("Message-ID") for key in box.iterkeys()]
     finally:
         box.close()
-    assert retried_ids == first_ids
+    assert set(retried_ids) == set(first_ids) | {"<event-1@tgit-agent.local>"}
     two = import_version(second_raw, 2, head_two)
     assert two["status"] == "ok"
     records = _reviews(paths)
-    assert len(records) == 0
+    assert {record["review_id"] for record in records} == {"<event-1@tgit-agent.local>"}
     assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
     for version in (1, 2):
         messages = _parse_mbox(first_raw if version == 1 else second_raw)
@@ -494,9 +508,9 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
         with paths.mail_spool.joinpath(f"reply-v{version}.eml").open("wb") as output:
             output.write(reply.as_bytes(policy=policy.SMTP))
     records = _reviews(paths)
-    assert len(records) == 2
-    assert {record["series_id"] for record in records} == {"remote-agent-review-v1", "remote-agent-review-v2"}
-    assert {record["revision"] for record in records} == {1}
+    assert len(records) == 3
+    assert {record["series_id"] for record in records if record["series_id"]} == {"remote-agent-review-v1", "remote-agent-review-v2"}
+    assert {record["revision"] for record in records if record["series_id"]} == {1}
     again = import_version(first_raw, 1, head_one)
     assert again["idempotent"] and len(_reviews(paths)) == 2
     assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
@@ -572,12 +586,16 @@ def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     (events / "event-1.json").write_text(json.dumps({"event_id": "event-1", "kind": "stop", "agent_id": "agent-review", "event_time": "now", "state": "stopped", "details": {}}))
     result = asyncio.run(service._fetch_pending_agent_mail({}))
     assert result["submissions"][0]["mbox"]
-    assert result["submissions"][0]["mbox"].encode("utf-8", "surrogateescape") == (service.config.patches_dir / result["submissions"][0]["artifact"]).read_bytes()
+    first_mbox = result["submissions"][0]["mbox"]
+    assert first_mbox.encode("utf-8", "surrogateescape") == (service.config.patches_dir / result["submissions"][0]["artifact"]).read_bytes()
     assert result["events"][0]["message"]
     assert "Message-ID" in result["events"][0]["message"]
+    assert result["submissions"][0]["mbox"]
     email = __import__("email")
     event_message = email.message_from_string(result["events"][0]["message"], policy=email.policy.default)
     assert "Event: stop\nEvent ID: event-1\n" in event_message.get_content()
+    repeated = asyncio.run(service._fetch_pending_agent_mail({}))
+    assert repeated["submissions"][0]["mbox"] == result["submissions"][0]["mbox"]
 
 
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):

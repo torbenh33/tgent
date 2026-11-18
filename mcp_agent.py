@@ -401,6 +401,12 @@ async def fetch_pending_agent_mail() -> dict[str, Any]:
                 repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
             )
             imported = {**imported, "agent_id": agent_id, "artifact_sha256": digest}
+            if imported.get("status") == "ok":
+                # A series import is not proof of mail delivery: make delivery
+                # explicit and retryable using stable Message-IDs.
+                messages = review_module._parse_mbox(raw)
+                await asyncio.to_thread(review_module._import_patches_to_maildir, messages, review_module.DEFAULT_PATHS)
+                imported["maildir_delivered"] = True
             if imported.get("status") == "ok" and not imported.get("idempotent") and metadata.get("state") == "halted":
                 await asyncio.to_thread(_notify_halted_patch, {"agent_id": agent_id, "state": "halted"}, imported, review_module)
             results.append(imported)
