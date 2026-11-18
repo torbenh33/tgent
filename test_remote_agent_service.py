@@ -513,8 +513,16 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     assert {record["revision"] for record in records if record["series_id"]} == {1}
     again = import_version(first_raw, 1, head_one)
     final_records = _reviews(paths)
-    assert again["idempotent"] and len(final_records) == 2
-    assert {record["series_id"] for record in final_records} == {"remote-agent-review-v1", "remote-agent-review-v2"}
+    assert again["idempotent"] and len(final_records) == 3
+    assert {record["review_id"] for record in final_records if record["series_id"]} == {
+        "<review-v1@example.invalid>", "<review-v2@example.invalid>"
+    }
+    assert {record["series_id"] for record in final_records if record["series_id"]} == {
+        "remote-agent-review-v1", "remote-agent-review-v2"
+    }
+    assert {record["review_id"] for record in final_records if not record["series_id"]} == {
+        "<event-1@tgit-agent.local>"
+    }
     assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
 
 
