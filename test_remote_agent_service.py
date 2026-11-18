@@ -460,10 +460,24 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     def import_version(raw, version, head):
         return import_patch_series(raw, base=base, submitted_head=head, repo_path=str(host),
             series_id=f"remote-agent-review-v{version}", artifact_sha256=hashlib.sha256(raw).hexdigest(), paths=paths)
+    import mailbox
     one = import_version(first_raw, 1, head_one)
     assert one["status"] == "ok"
+    # The cover and each patch are individual messages in the review Maildir.
+    box = mailbox.Maildir(paths.mail_spool, create=False)
+    try:
+        first_ids = [box.get_message(key).get("Message-ID") for key in box.iterkeys()]
+    finally:
+        box.close()
+    assert set(first_ids) == {message["Message-ID"] for message in _parse_mbox(first_raw)}
     retry_one = import_version(first_raw, 1, head_one)
     assert retry_one["status"] == "ok" and retry_one["idempotent"]
+    box = mailbox.Maildir(paths.mail_spool, create=False)
+    try:
+        retried_ids = [box.get_message(key).get("Message-ID") for key in box.iterkeys()]
+    finally:
+        box.close()
+    assert retried_ids == first_ids
     two = import_version(second_raw, 2, head_two)
     assert two["status"] == "ok"
     records = _reviews(paths)
@@ -561,6 +575,9 @@ def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     assert result["submissions"][0]["mbox"].encode("utf-8", "surrogateescape") == (service.config.patches_dir / result["submissions"][0]["artifact"]).read_bytes()
     assert result["events"][0]["message"]
     assert "Message-ID" in result["events"][0]["message"]
+    email = __import__("email")
+    event_message = email.message_from_string(result["events"][0]["message"], policy=email.policy.default)
+    assert "Event: stop\nEvent ID: event-1\n" in event_message.get_content()
 
 
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
