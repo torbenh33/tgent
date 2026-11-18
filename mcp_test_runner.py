@@ -42,7 +42,7 @@ async def _run_pytest(project_dir: str, timeout_seconds: int = 180) -> dict:
     target_dir = project_dir.strip() if isinstance(project_dir, str) and project_dir.strip() else "."
     started_at = datetime.now(timezone.utc)
     run_id = str(uuid.uuid4())
-    command = [sys.executable, "-m", "pytest", "-vv", "--rootdir", target_dir, target_dir]
+    command = [sys.executable, "-m", "pytest", "-q", "--rootdir", target_dir, target_dir]
     result = await run_subprocess(*command, timeout_seconds=timeout_seconds)
     completed_at = datetime.now(timezone.utc)
     returncode = result.get("returncode")
