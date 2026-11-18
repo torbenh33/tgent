@@ -512,7 +512,9 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     assert {record["series_id"] for record in records if record["series_id"]} == {"remote-agent-review-v1", "remote-agent-review-v2"}
     assert {record["revision"] for record in records if record["series_id"]} == {1}
     again = import_version(first_raw, 1, head_one)
-    assert again["idempotent"] and len(_reviews(paths)) == 2
+    final_records = _reviews(paths)
+    assert again["idempotent"] and len(final_records) == 2
+    assert {record["series_id"] for record in final_records} == {"remote-agent-review-v1", "remote-agent-review-v2"}
     assert len(list(paths.series_root.glob("*/manifest.json"))) == 2
 
 
