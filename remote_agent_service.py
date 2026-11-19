@@ -464,7 +464,10 @@ class RemoteAgentService:
             cached = artifact.read_bytes()
             try:
                 cached_messages = mailbox.mbox(artifact, create=False)
-                valid_cache = len(cached_messages) >= 2 and all(message.get("Message-ID") for message in cached_messages)
+                valid_cache = len(cached_messages) >= 2 and all(
+                    message.get("Message-ID") and email.utils.parsedate_tz(str(message.get("Date", "")))
+                    for message in cached_messages
+                )
                 cached_messages.close()
             except (OSError, mailbox.Error):
                 valid_cache = False
@@ -528,7 +531,10 @@ class RemoteAgentService:
             message["References"] = message_ids[0]
         for message in messages:
             message.policy = policy.SMTP
+            # Git's format-patch mbox omits Date; downstream Maildir clients such
+            # as Mutt rely on it for message ordering and display.
             message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]
+            message["Date"] = email.utils.formatdate(localtime=True)
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)

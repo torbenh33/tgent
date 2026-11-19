@@ -441,6 +441,12 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     service, host, _cover_one, base, head_one = _published_review_fixture(tmp_path)
     first = service._generate_review_patch("agent-review", 1)
     first_raw = (service.config.patches_dir / first["artifact"]).read_bytes()
+    # Submission messages must carry RFC-valid dates in the serialized mbox;
+    # otherwise Mutt may not display/order imported Maildir messages correctly.
+    import email.utils
+    first_messages = _parse_mbox(first_raw)
+    assert len(first_messages) >= 2
+    assert all(email.utils.parsedate_tz(str(message.get("Date", ""))) for message in first_messages)
     (host / "tracked.txt").write_text("version two\n")
     subprocess.run(("git", "-C", str(host), "add", "tracked.txt"), check=True)
     subprocess.run(("git", "-C", str(host), "commit", "-qm", "version two change"), check=True)
@@ -466,10 +472,12 @@ def test_remote_versions_import_idempotently_with_version_scoped_reply_associati
     # The cover and each patch are individual messages in the review Maildir.
     box = mailbox.Maildir(paths.mail_spool, create=False)
     try:
-        first_ids = [box.get_message(key).get("Message-ID") for key in box.iterkeys()]
+        first_maildir_messages = [box.get_message(key) for key in box.iterkeys()]
+        first_ids = [message.get("Message-ID") for message in first_maildir_messages]
     finally:
         box.close()
     assert set(first_ids) == {message["Message-ID"] for message in _parse_mbox(first_raw)}
+    assert all(email.utils.parsedate_tz(str(message.get("Date", ""))) for message in first_maildir_messages)
     # Lifecycle and submission mail share the exact incoming Maildir.
     lifecycle = EmailMessage()
     lifecycle["Message-ID"] = "<event-1@tgit-agent.local>"
