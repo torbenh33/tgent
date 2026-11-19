@@ -464,7 +464,10 @@ class RemoteAgentService:
             cached = artifact.read_bytes()
             try:
                 cached_messages = mailbox.mbox(artifact, create=False)
-                valid_cache = len(cached_messages) >= 2 and all(message.get("Message-ID") for message in cached_messages)
+                valid_cache = len(cached_messages) >= 2 and all(
+                    message.get("Message-ID") and email.utils.parsedate_tz(str(message.get("Date", "")))
+                    for message in cached_messages
+                )
                 cached_messages.close()
             except (OSError, mailbox.Error):
                 valid_cache = False
@@ -501,18 +504,19 @@ class RemoteAgentService:
         summary = "; ".join(commit_subjects[:3]) or "patch series"
         if len(commit_subjects) > 3:
             summary += f"; and {len(commit_subjects) - 3} more"
-        messages[0].replace_header("Subject", f"[PATCH {submission_id} 0/{len(messages) - 1}] {summary}")
+        messages[0].replace_header("Subject", f"[PATCH v{version or 1} 0/{len(messages) - 1}] {summary}")
         import quopri
         messages[0].set_payload(quopri.encodestring(cover.encode("utf-8")).decode("ascii"))
         messages[0]["Content-Type"] = 'text/plain; charset="utf-8"'
         messages[0]["Content-Transfer-Encoding"] = "quoted-printable"
 
-        # Commit-derived Message-IDs can repeat when a later version reuses commits.
-        # Namespace them by submission ID so reply association is always version-specific.
+        # Commit-derived Message-IDs can repeat across agents and versions.
+        # Namespace by agent and version; Reply-To remains the configured review
+        # workflow address, and reply ownership is resolved from this persisted ID.
         message_ids = []
         for index, message in enumerate(messages):
             old_id = message.get("Message-ID", "")
-            token = hashlib.sha256(f"{submission_id}:{index}:{old_id}".encode()).hexdigest()[:32]
+            token = hashlib.sha256(f"{agent_id}:{version or 1}:{index}:{old_id}".encode()).hexdigest()[:32]
             new_id = f"<{token}@tgit-agent.local>"
             if message.get("Message-ID"):
                 message.replace_header("Message-ID", new_id)
@@ -520,15 +524,21 @@ class RemoteAgentService:
                 message["Message-ID"] = new_id
             message_ids.append(new_id)
         for index, message in enumerate(messages[1:], 1):
-            message.replace_header("Subject", f"[PATCH {submission_id} {index}/{len(messages) - 1}] {message.get('Subject', '')}")
+            message.replace_header("Subject", f"[PATCH v{version or 1} {index}/{len(messages) - 1}] {message.get('Subject', '')}")
             for header in ("In-Reply-To", "References"):
                 if message.get(header):
                     del message[header]
             message["In-Reply-To"] = message_ids[0]
             message["References"] = message_ids[0]
+        reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
+        if not reply_to or "\\n" in reply_to or "\\r" in reply_to:
+            raise RuntimeError("TGIT_REVIEW_REPLY_TO must be a valid single-line identity")
         for message in messages:
+            message["Reply-To"] = reply_to
             message.policy = policy.SMTP
             message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]
+            # format-patch mbox messages omit Date; Maildir clients rely on it.
+            message["Date"] = email.utils.formatdate(localtime=True)
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)
