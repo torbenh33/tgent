@@ -369,9 +369,9 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     messages = _parse_mbox(first_bytes)
     assert len(messages) == 3
     assert messages[0].get_content().rstrip("\n") == cover
-    assert messages[0]["Subject"].startswith("[PATCH agent-review-v1 0/2] submitted change; follow-up change")
-    assert messages[1]["Subject"].startswith("[PATCH agent-review-v1 1/2] [PATCH 1/2] submitted change")
-    assert messages[2]["Subject"].startswith("[PATCH agent-review-v1 2/2] [PATCH 2/2] follow-up change")
+    assert messages[0]["Subject"].startswith("[PATCH v1 0/2] submitted change; follow-up change")
+    assert messages[1]["Subject"].startswith("[PATCH v1 1/2] [PATCH 1/2] submitted change")
+    assert messages[2]["Subject"].startswith("[PATCH v1 2/2] [PATCH 2/2] follow-up change")
     cover_id = messages[0]["Message-ID"]
     assert cover_id and all(message["Message-ID"] for message in messages[1:])
     assert len({message["Message-ID"] for message in messages}) == 3
@@ -423,8 +423,12 @@ def test_remote_submission_versions_have_independent_stable_threads(tmp_path):
     assert ids_one.isdisjoint(ids_two)
     assert cover_one == messages_one[0].get_content().rstrip("\n")
     assert cover_two == messages_two[0].get_content().rstrip("\n")
-    assert all("agent-review-v1" in message["Subject"] for message in messages_one)
-    assert all("agent-review-v2" in message["Subject"] for message in messages_two)
+    assert all(message["Subject"].startswith("[PATCH v1 ") for message in messages_one)
+    assert all(message["Subject"].startswith("[PATCH v2 ") for message in messages_two)
+    assert all("agent-review" not in message["Subject"] for message in messages_one + messages_two)
+    assert all(message.get("Reply-To") for message in messages_one + messages_two)
+    import email.utils
+    assert all(email.utils.parsedate_tz(str(message.get("Date", ""))) for message in messages_one + messages_two)
     for messages in (messages_one, messages_two):
         parent = messages[0]["Message-ID"]
         assert all(message["In-Reply-To"] == parent for message in messages[1:])
