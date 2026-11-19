@@ -34,7 +34,7 @@ def build_operation_handlers(
         "start": uploads.start_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "submit_patch", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "review_replies"}:
+        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "submit_patch", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission", "review_replies"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")
@@ -53,7 +53,7 @@ def build_async_operation_handlers(
         "start": uploads.start_async_handler(start_agent),
     }
     for operation, handler in lifecycle_handlers.items():
-        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "submit_patch", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "ensure_project", "review_replies"}:
+        if operation not in {"status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "submit_patch", "acknowledge_patch_applied", "list_agents", "set_tools", "agent_tools", "summarize_history", "nack_patch", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission", "ensure_project", "review_replies"}:
             raise ValueError(f"Unsupported lifecycle handler operation: {operation}")
         if not callable(handler):
             raise TypeError(f"Lifecycle handler for {operation} must be callable")

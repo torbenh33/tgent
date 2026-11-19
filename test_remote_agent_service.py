@@ -391,6 +391,35 @@ def test_pending_review_mbox_is_generated_stably_from_managed_ref_without_touchi
     assert after == before
 
 
+def test_integrate_approved_version_isolated_and_preserves_other_version_and_checkout(tmp_path):
+    from types import SimpleNamespace
+
+    service, host, _cover, base, head_one = _published_review_fixture(tmp_path)
+    mirror = Path(service.controller.store.get_metadata("agent-review")["project_mirror"])
+    registration = service.controller.store.get_metadata("agent-review")
+    registration["project_mirror"] = str(mirror)
+    (host / "tracked.txt").write_text("second version\n")
+    subprocess.run(("git", "-C", str(host), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(host), "commit", "-qm", "version two"), check=True)
+    head_two = subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    active_before = head_two
+    subprocess.run(("git", "--git-dir", str(mirror), "fetch", str(host), f"{head_two}:refs/agent-submissions/agent-review/v2"), check=True, capture_output=True)
+    (service.config.state_dir / "submissions" / "agent-review" / "v2.json").write_text(json.dumps({
+        "agent_id": "agent-review", "submission_id": "agent-review-v2", "version": 2,
+        "ref": "refs/agent-submissions/agent-review/v2", "commit_id": head_two, "base": base,
+        "cover_letter_message": "second version", "review_record": "kept",
+    }))
+    result = asyncio.run(service._integrate_submission({"agent_id": "agent-review", "version": 1, "approved": True}))
+    assert result["source_commit"] == head_one
+    assert subprocess.run(("git", "-C", result["worktree"], "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip() == result["integration_commit"]
+    assert subprocess.run(("git", "-C", str(host), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip() == active_before
+    assert subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "refs/agent-submissions/agent-review/v1"), check=True, capture_output=True, text=True).stdout.strip() == head_one
+    assert subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "refs/agent-submissions/agent-review/v2"), check=True, capture_output=True, text=True).stdout.strip() == head_two
+    assert json.loads((service.config.state_dir / "submissions" / "agent-review" / "v2.json").read_text())["review_record"] == "kept"
+    with pytest.raises(RuntimeError, match="already exists"):
+        asyncio.run(service._integrate_submission({"agent_id": "agent-review", "version": 1, "approved": True}))
+
+
 def test_remote_submission_versions_have_independent_stable_threads(tmp_path):
     from mcp_tgit_review import _parse_mbox
 

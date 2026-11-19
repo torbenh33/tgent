@@ -126,6 +126,10 @@ class RemoteAgentAdapter:
         """Retrieve a bounded tail of the remote worker stderr log."""
         return self._request("logs", agent_id=agent_id, max_bytes=max_bytes)
 
+    def integrate_submission(self, agent_id: str, version: int, *, approved: bool = False) -> dict[str, object]:
+        """Explicitly integrate one approved version into its isolated remote worktree."""
+        return self._request("integrate_submission", agent_id=agent_id, version=version, approved=approved)
+
     def acknowledge_patch_applied(self, agent_id: str) -> dict[str, object]:
         """Record explicit acknowledgement of an already-applied submitted patch."""
         return self._request("acknowledge_patch_applied", agent_id=agent_id)

@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "submit_patch", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "ensure_project", "review_replies"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "submit_patch", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission", "ensure_project", "review_replies"})
 
 
 class RemoteProtocolError(ValueError):
@@ -71,6 +71,7 @@ def validate_request(value: object) -> dict[str, object]:
         "pending_patches": common,
         "fetch_pending_agent_mail": common,
         "acknowledge_event_mail": common | {"event_id", "message_id"},
+        "integrate_submission": common | {"agent_id", "version", "approved"},
         "set_tools": common | {"agent_id", "tools"},
         "agent_tools": common | {"agent_id"},
         "summarize_history": common | {"agent_id"},
@@ -91,6 +92,11 @@ def validate_request(value: object) -> dict[str, object]:
     elif operation == "ensure_project":
         if any(not isinstance(value.get(k), str) or not 1 <= len(value[k]) <= 4096 for k in ("project_name", "source_path")):
             raise RemoteProtocolError("Invalid project identity")
+    elif operation == "integrate_submission":
+        _validate_id(value.get("agent_id"), "agent_id")
+        _bounded_int(value.get("version"), "version", 1, 2**31 - 1)
+        if value.get("approved") is not True:
+            raise RemoteProtocolError("Integration requires explicit approval")
     elif operation == "acknowledge_event_mail":
         _validate_id(value.get("event_id"), "event_id")
         if not isinstance(value.get("message_id"), str) or len(value["message_id"]) > 998:
@@ -106,7 +112,7 @@ def validate_request(value: object) -> dict[str, object]:
             raise RemoteProtocolError("repo_path must be bounded text")
         if not isinstance(value.get("unacknowledged_only"), bool):
             raise RemoteProtocolError("unacknowledged_only must be boolean")
-    elif operation not in {"list_agents", "stop_agents", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail"}:
+    elif operation not in {"list_agents", "stop_agents", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission"}:
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "nack_patch" and (value["reason"] is not None and (not isinstance(value["reason"], str) or len(value["reason"]) > 4000)):
             raise RemoteProtocolError("reason must be null or a string of at most 4000 characters")

@@ -141,7 +141,7 @@ class RemoteAgentService:
                 "pending_patches": self._pending_patches,
                 "fetch_pending_agent_mail": self._fetch_pending_agent_mail,
                 "acknowledge_event_mail": self._acknowledge_event_mail,
-                "acknowledge_event_mail": self._acknowledge_event_mail,
+                "integrate_submission": self._integrate_submission,
                 "list_agents": self._list_agents,
                 "set_tools": self._set_tools,
                 "agent_tools": self._agent_tools,
@@ -391,6 +391,46 @@ class RemoteAgentService:
 
     async def _reap_agents(self, request):
         return await self.controller.reap_agents(request["agent_ids"])
+
+    async def _integrate_submission(self, request):
+        """Integrate an explicitly approved version into a new controlled worktree."""
+        if request.get("approved") is not True:
+            raise RemoteProtocolError("Integration requires explicit approval")
+        agent_id, version = request["agent_id"], request["version"]
+        identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
+        metadata_path = Path(str(self.config.state_dir)) / "submissions" / identity / f"v{version}.json"
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            raise RuntimeError("Submission version metadata is missing")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("agent_id") != agent_id or metadata.get("version") != version:
+            raise RuntimeError("Submission version identity is invalid")
+        registered = self.controller.store.get_metadata(agent_id)
+        mirror = Path(registered.get("project_mirror", ""))
+        if mirror.parent != Path(str(self.config.project_root_dir)) or mirror.is_symlink():
+            raise RuntimeError("Unsafe registered project mirror")
+        ref = f"refs/agent-submissions/{identity}/v{version}"
+        if metadata.get("ref") != ref:
+            raise RuntimeError("Published submission ref is invalid")
+        head = subprocess.run(("git", "--git-dir", str(mirror), "rev-parse", "--verify", f"{ref}^{{commit}}"), check=True, capture_output=True, text=True).stdout.strip()
+        if head.lower() != str(metadata.get("commit_id", "")).lower():
+            raise RuntimeError("Published submission ref does not match version metadata")
+        base = metadata.get("base")
+        if not isinstance(base, str) or subprocess.run(("git", "--git-dir", str(mirror), "cat-file", "-e", f"{base}^{{commit}}"), capture_output=True).returncode:
+            raise RuntimeError("Submission base commit is unavailable")
+        branch = f"agent-integrations/{identity}/v{version}"
+        integration_ref = f"refs/heads/{branch}"
+        if subprocess.run(("git", "--git-dir", str(mirror), "show-ref", "--verify", "--quiet", integration_ref)).returncode == 0:
+            raise RuntimeError("Integration branch already exists; refusing to overwrite it")
+        target = Path(str(self.config.project_root_dir)) / f"integration-{identity}-v{version}"
+        subprocess.run(("git", "--git-dir", str(mirror), "worktree", "add", "-b", branch, str(target), base), check=True, capture_output=True, text=True)
+        try:
+            subprocess.run(("git", "-C", str(target), "merge", "--no-edit", "--no-ff", head), check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError:
+            raise RuntimeError(f"Integration conflict; resolve explicitly in controlled worktree {target}")
+        commit = subprocess.run(("git", "-C", str(target), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+        audit_ref = f"refs/agent-integration-audit/{identity}/v{version}"
+        subprocess.run(("git", "--git-dir", str(mirror), "update-ref", audit_ref, commit), check=True, capture_output=True)
+        return {"status": "integrated", "agent_id": agent_id, "version": version, "source_ref": ref, "source_commit": head, "base": base, "integration_ref": integration_ref, "integration_commit": commit, "worktree": str(target), "audit_ref": audit_ref}
 
     async def _acknowledge_patch_applied(self, request):
         return await self.controller.acknowledge_submitted_patch_applied(request["agent_id"])
