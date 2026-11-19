@@ -110,10 +110,7 @@ This is deliberately out of scope for Phase 3. The future vision is that a maint
 
 ### Phase 4: Finalize documentation and remove remaining obsolete code
 
-- Remove only remote artifact/Message-ID code proven unused after Phases 1–3; retain shared mbox support used for local review and any generated review mbox path still required for compatibility.
-- Update `docs/remote-agent-review.md`, protocol documentation, and tests to describe the implemented contract and the manual-fetch transition if it remains relevant.
-- Run focused service, protocol, integration, importer, review, and sandbox tests, followed by full pytest.
-- **Exit criteria:** there is one remote submission source of truth (Git refs and provenance), no remote submission caller depends on transferred `.patch` artifacts, local mbox review remains intact, and the complete test suite passes.
+Implementation details and exit criteria are in [the Phase 4 implementation plan](remote-agent-git-submission-phase-4.md).
 
 ## Existing tests and assertions to revise
 
