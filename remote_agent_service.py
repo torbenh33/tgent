@@ -8,6 +8,7 @@ import fcntl
 from datetime import datetime, timezone
 import inspect
 import json
+import mailbox
 import hashlib
 import email.message
 import email.utils
