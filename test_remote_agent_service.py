@@ -634,7 +634,8 @@ def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     events = service.config.state_dir / "lifecycle-events"
     events.mkdir()
-    (events / "event-1.json").write_text(json.dumps({"event_id": "event-1", "kind": "stop", "agent_id": "agent-review", "event_time": "now", "state": "stopped", "details": {}}))
+    task, base = "Implement a carefully scoped feature", "a" * 40
+    (events / "event-1.json").write_text(json.dumps({"event_id": "event-1", "kind": "start", "agent_id": "agent-review", "event_time": "now", "state": "running", "details": {"task": task, "base_commit": base}}))
     result = asyncio.run(service._fetch_pending_agent_mail({}))
     assert result["submissions"][0]["mbox"]
     first_mbox = result["submissions"][0]["mbox"]
@@ -644,7 +645,9 @@ def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     assert result["submissions"][0]["mbox"]
     email = __import__("email")
     event_message = email.message_from_string(result["events"][0]["message"], policy=email.policy.default)
-    assert "Event: stop\nEvent ID: event-1\n" in event_message.get_content()
+    assert "Event: start\nEvent ID: event-1\n" in event_message.get_content()
+    assert f"Base commit: {base}" in event_message.get_content()
+    assert f"Task:\n{task}" in event_message.get_content()
     repeated = asyncio.run(service._fetch_pending_agent_mail({}))
     assert repeated["submissions"][0]["mbox"] == result["submissions"][0]["mbox"]
 

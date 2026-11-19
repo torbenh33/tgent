@@ -39,6 +39,12 @@ from remote_agent_protocol import (
 from remote_agent_upload import RemoteUploadManager
 
 
+def _bounded_event_text(value: object, limit: int) -> str:
+    """Normalize untrusted event text for durable metadata and plain-text mail."""
+    text = str(value).replace("\\r", " ").replace("\\x00", "")
+    return text if len(text) <= limit else text[:limit] + "\\n[truncated]"
+
+
 def _json_line(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + bytes((10,))
 
@@ -274,6 +280,7 @@ class RemoteAgentService:
 
     async def _start_agent(self, checkout: Path, request: dict[str, object]) -> dict[str, Any]:
         request = dict(request)
+        task = request.get("task")
         name, base = request.pop("_project_name", None), request.pop("_base_commit", None)
         repository = self._repository(name)
         if not isinstance(base, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base) is None:
@@ -294,7 +301,7 @@ class RemoteAgentService:
         result = await self.controller.start_agent(request, source_root=work, _base_commit=base, _mirror_path=repository, _project_name=name)
         agent_id = result.get("agent_id")
         if isinstance(agent_id, str):
-            self._record_lifecycle_event("start", agent_id, {})
+            self._record_lifecycle_event("start", agent_id, {"task": _bounded_event_text(task, 4000), "base_commit": base})
         return result
 
     async def _status(self, request):
@@ -314,7 +321,7 @@ class RemoteAgentService:
             metadata = self.controller.store.get_metadata(agent_id)
             question = metadata.get("operator_question")
             if metadata.get("stop_reason") == "awaiting_command" and isinstance(question, str) and question.strip():
-                self._record_lifecycle_event("operator_question", agent_id, {"question": question})
+                self._record_lifecycle_event("operator_question", agent_id, {"question": _bounded_event_text(question, 4000)})
 
     async def _history(self, request):
         history = await self.controller.get_history(request["agent_id"])
@@ -343,6 +350,7 @@ class RemoteAgentService:
         )
 
     def _record_lifecycle_event(self, kind: str, agent_id: str, details: dict[str, Any]) -> None:
+        details = {key: (_bounded_event_text(value, 4000) if isinstance(value, str) else value) for key, value in details.items()}
         events_dir = Path(str(self.config.state_dir)) / "lifecycle-events"
         events_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         event_id = hashlib.sha256(f"{kind}:{agent_id}:{json.dumps(details, sort_keys=True)}".encode()).hexdigest()
@@ -656,7 +664,11 @@ class RemoteAgentService:
                         if event.get('kind') == 'operator_question':
                             body = f"Agent {event['agent_id']} awaits your response.\n\nQuestion:\n{details.get('question', '')}\n\nReply using continue_agent for agent {event['agent_id']}; your message resumes the agent.\n"
                         else:
-                            body = f"Event: {event['kind']}\nEvent ID: {event['event_id']}\nTime: {event['event_time']}\nAgent: {event['agent_id']}\nState: {event['state']}\nDetails: {json.dumps(details, ensure_ascii=False)}\n"
+                            body = f"Event: {event['kind']}\nEvent ID: {event['event_id']}\nTime: {event['event_time']}\nAgent: {event['agent_id']}\nState: {event['state']}\n"
+                            if event.get('kind') == 'start':
+                                body += f"Base commit: {details.get('base_commit', 'unknown')}\nTask:\n{details.get('task', '(not provided)')}\n"
+                            else:
+                                body += f"Details: {json.dumps(details, ensure_ascii=False, default=str)[:8000]}\n"
                         message.set_content(body)
                         event["message"] = message.as_string()
                     events.append(event)
