@@ -29,7 +29,6 @@ def test_loads_remote_agent_config_and_derives_managed_paths(tmp_path) -> None:
     assert config.state_dir == PurePosixPath("/srv/tgent/state")
     assert config.snapshots_dir == PurePosixPath("/srv/tgent/snapshots")
     assert config.logs_dir == PurePosixPath("/srv/tgent/logs")
-    assert config.patches_dir == PurePosixPath("/srv/tgent/patches")
 
 
 @pytest.mark.parametrize(

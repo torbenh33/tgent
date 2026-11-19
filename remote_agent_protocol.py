@@ -17,7 +17,7 @@ MAX_RESPONSE_BYTES = 4_194_304
 # Retained for callers that import the original fixed endpoint constant.
 REMOTE_COMMAND = "python3 -m remote_agent_service --stdio-v1"
 _ID_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "submit_patch", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "patches", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission", "ensure_project", "review_replies"})
+_OPERATIONS = frozenset({"prepare_upload", "finalize_upload", "start", "submit_patch", "status", "history", "continue", "stop", "stop_agents", "restart_agents", "logs", "reap", "reap_agents", "acknowledge_patch_applied", "nack_patch", "list_agents", "set_tools", "agent_tools", "summarize_history", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission", "ensure_project", "review_replies"})
 
 
 class RemoteProtocolError(ValueError):
@@ -64,11 +64,9 @@ def validate_request(value: object) -> dict[str, object]:
         "reap_agents": common | {"agent_ids"},
         "logs": common | {"agent_id", "max_bytes"},
         "reap": common | {"agent_id"},
-        "patches": common | {"agent_id"},
         "acknowledge_patch_applied": common | {"agent_id"},
         "nack_patch": common | {"agent_id", "reason"},
         "list_agents": common,
-        "pending_patches": common,
         "fetch_pending_agent_mail": common,
         "acknowledge_event_mail": common | {"event_id", "message_id"},
         "integrate_submission": common | {"agent_id", "version", "approved"},
@@ -112,7 +110,7 @@ def validate_request(value: object) -> dict[str, object]:
             raise RemoteProtocolError("repo_path must be bounded text")
         if not isinstance(value.get("unacknowledged_only"), bool):
             raise RemoteProtocolError("unacknowledged_only must be boolean")
-    elif operation not in {"list_agents", "stop_agents", "pending_patches", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission"}:
+    elif operation not in {"list_agents", "stop_agents", "fetch_pending_agent_mail", "acknowledge_event_mail", "integrate_submission"}:
         _validate_id(value.get("agent_id"), "agent_id")
         if operation == "nack_patch" and (value["reason"] is not None and (not isinstance(value["reason"], str) or len(value["reason"]) > 4000)):
             raise RemoteProtocolError("reason must be null or a string of at most 4000 characters")

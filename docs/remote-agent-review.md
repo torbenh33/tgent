@@ -1,6 +1,6 @@
 # Reviewing remote agent patches
 
-Remote agents work in isolated Git snapshots. When an agent submits its committed changes, the remote service saves a bounded patch-series artifact. In remote mode, `review_remote_agent` retrieves that artifact, validates it, and imports it into the local `mcp_tgit_review` store. You can then review and reply using the same mail-based workflow as other patch series.
+Remote agents work in isolated Git snapshots. A submission publishes a versioned Git ref in the remote project bare mirror; that ref and its service-managed provenance are the source of truth. In remote mode, `fetch_pending_agent_mail` is the normal review workflow: the service generates a review mbox from each published ref and its cover-letter metadata, and the local MCP layer imports the generated messages into the existing review store and Maildir. The service creates an ephemeral mbox compatibility representation in the pending-mail response for local Maildir review; it retains no mbox artifact or transfer file.
 
 ## Before you start
 
@@ -16,17 +16,17 @@ Start an agent with the `start_agent` tool. Its request has this form:
 {"schema_version":1,"task":"Implement the requested change","name":"optional label"}
 ```
 
-Use `list_remote_agents` and `get_agent_status(agent_id)` to monitor it. An agent that has completed a patch submission will have a patch artifact available. Ask the MCP client to call:
+Use `list_remote_agents` and `get_agent_status(agent_id)` to monitor it. An agent that has completed a submission has a published versioned ref available for review. Ask the MCP client to call:
 
 ```text
-review_remote_agent(agent_id="<agent-id>", artifact_directory="/path/to/kept-artifacts")
+fetch_pending_agent_mail()
 ```
 
-For example, if the agent ID is `a-123`, use `review_remote_agent("a-123", "/var/tmp/agent-review")`. The returned result includes the local `series_id`, revision and retained artifact path/digest. When applying a downloaded patch with `apply_agent_patch`, pass the originating `agent_id`; after Git successfully applies the complete patch series, the tool stops the associated agent if needed and acknowledges its submitted patch as applied, through the configured local or remote API. It stops the agent before acknowledging because local acknowledgement requires an inactive agent. A failed apply does not stop or acknowledge it. Without an agent ID, application has no lifecycle side effect. The artifact directory is useful for audit; choose a directory writable by the MCP server. Repeating the import for an identical artifact is idempotent and reports the existing revision. If no patch is available, the result has status `unavailable`; retry after the agent submits.
+The result reports each submission version's import status, series/revision and digest; the review store retains the generated mbox and remote provenance. Review and reply using the same mail-based workflow as other patch series. Repeated import of the same version is idempotent. If a submission is not yet available, fetch again after the agent submits. Applying a reviewed series remains a separate, explicit operation; it does not implicitly modify the operator's active checkout.
 
-Import checks the artifact digest, mbox structure and Message-IDs, the declared base, and whether patches apply cleanly. Artifacts larger than 16 MiB are rejected. Failed validation returns an error and does not alter your working tree. The remote cover letter is imported verbatim, so treat its text as agent-authored content.
+Import checks the generated mbox structure and Message-IDs, the declared base, and whether patches apply cleanly in a temporary clone. Generated review mboxes are bounded; failed validation returns an error and does not alter your working tree. The submitted cover letter is imported verbatim, so treat its text as agent-authored content.
 
-There is also a lower-level `retrieve_agent_patch(agent_id, destination="/tmp")` tool that only downloads the remote artifact and reports its local path; it does **not** import the series. Its destination must be an existing directory, never a filename. The patch is saved inside that directory using a generated `<agent-id>.patch` filename. The default `/tmp` destination avoids creating or modifying files in the current Git repository; choose another directory explicitly if you want to retain the artifact elsewhere. Prefer `review_remote_agent` for normal review.
+The versioned Git ref is also available for manual recovery: fetch it from the remote project bare mirror and inspect/integrate it explicitly. Manual fetch is a recovery/transition path, not the normal review workflow. Do not expect remote `.patch` files to exist. Generated mbox content is returned only through the pending-mail operation and is not saved as an artifact or exposed through separate retrieval APIs.
 
 ## Read and reply to comments
 

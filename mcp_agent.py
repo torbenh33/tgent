@@ -300,36 +300,6 @@ async def stop_agent(agent_id: str) -> dict[str, Any]:
 
 
 
-@mcp.tool()
-async def review_remote_agent(agent_id: str, artifact_directory: str) -> dict[str, Any]:
-    """Retrieve a complete remote mbox and import it into local review state.
-
-    The retained artifact is kept in ``artifact_directory`` for audit. Repeated
-    calls for the same artifact digest are idempotent.
-    """
-    remote = _remote_adapter()
-    if remote is None:
-        return {"status": "error", "message": "Remote review requires remote mode."}
-    metadata = await asyncio.to_thread(remote.patches, agent_id)
-    if metadata.get("available") is not True:
-        return {"status": "unavailable", "agent_id": agent_id}
-    artifact = await asyncio.to_thread(remote.retrieve_patch, agent_id, artifact_directory)
-    if artifact is None:
-        return {"status": "unavailable", "agent_id": agent_id}
-    import_review = getattr(importlib.import_module("mcp_tgit_review"), "import_patch_series")
-    import hashlib
-    raw = artifact.read_bytes()
-    digest = hashlib.sha256(raw).hexdigest()
-    if digest != metadata.get("sha256"):
-        return {"status": "error", "message": "Retrieved artifact digest does not match remote metadata.", "artifact": str(artifact)}
-    result = await asyncio.to_thread(
-        import_review, raw, base=metadata.get("base_commit"),
-        submitted_head=metadata.get("submitted_head"), repo_path=str(_PROJECT_ROOT),
-        series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
-    )
-    return {**result, "agent_id": agent_id, "version": metadata.get("version", 1), "submission_id": metadata.get("submission_id"), "ref": metadata.get("ref"), "artifact": str(artifact), "artifact_sha256": digest}
-
-
 def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_module: Any) -> None:
     """Deliver a concise operator notice to the review Maildir."""
     paths = review_module.DEFAULT_PATHS
@@ -435,26 +405,6 @@ async def fetch_pending_agent_mail() -> dict[str, Any]:
     return {"status": "partial" if failures else "ok", "submissions": results, "events": event_results}
 
 
-@mcp.tool()
-async def retrieve_agent_patch(agent_id: str, destination: str = "/tmp") -> dict[str, Any]:
-    """Download a submitted patch into a destination directory (default: /tmp).
-
-    ``destination`` must be a directory, never a filename, and must already
-    exist. Retrieval writes only the generated patch file inside that directory;
-    the default keeps the current Git repository clean. Returns the local
-    artifact path, or ``available: false`` if no patch has been submitted.
-    Available in remote mode.
-    """
-    remote = _remote_adapter()
-    if remote is None:
-        return {"agent_id": agent_id, "available": False, "message": "Patch retrieval requires remote mode."}
-    metadata = await asyncio.to_thread(remote.patches, agent_id)
-    if metadata.get("available") is not True:
-        return {"agent_id": agent_id, "available": False, "error": metadata.get("error")}
-    path = await asyncio.to_thread(remote.retrieve_patch, agent_id, destination)
-    if path is None:
-        return {"agent_id": agent_id, "available": False, "error": "Submission became unavailable during retrieval."}
-    return {"agent_id": agent_id, "available": True, "path": str(path)}
 
 
 async def _run() -> None:

@@ -77,10 +77,6 @@ class RemoteAgentConfig:
     def logs_dir(self) -> PurePosixPath:
         return self.remote_base_dir / "logs"
 
-    @property
-    def patches_dir(self) -> PurePosixPath:
-        return self.remote_base_dir / "patches"
-
 
 def load_remote_agent_config(
     path: str | os.PathLike[str] | None = None,

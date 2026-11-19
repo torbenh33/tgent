@@ -107,7 +107,6 @@ class RemoteAgentService:
             config.logs_dir,
             config.uploads_dir,
             config.project_root_dir,
-            config.patches_dir,
         ):
             _managed_directory(Path(str(configured)))
         self.runtime_manifest = _selected_runtime(config)
@@ -142,9 +141,7 @@ class RemoteAgentService:
                 "reap_agents": self._reap_agents,
                 "acknowledge_patch_applied": self._acknowledge_patch_applied,
                 "nack_patch": self._nack_patch,
-                "patches": self._patches,
                 "submit_patch": self._submit_patch_protocol,
-                "pending_patches": self._pending_patches,
                 "fetch_pending_agent_mail": self._fetch_pending_agent_mail,
                 "acknowledge_event_mail": self._acknowledge_event_mail,
                 "integrate_submission": self._integrate_submission,
@@ -457,19 +454,11 @@ class RemoteAgentService:
         """Return metadata for all registered remote agents."""
         return {"agents": await self.controller.list_agents()}
 
-    def _generate_review_patch(self, agent_id: str, version: int | None = None) -> dict[str, Any]:
+    def _generate_review_patch(self, agent_id: str, version: int) -> dict[str, Any]:
         """Generate the compatibility mbox afresh from a published submission ref."""
-        import hashlib
-        import mailbox
         identity = re.sub(r"[^A-Za-z0-9_-]", "-", agent_id)
         metadata_dir = Path(str(self.config.state_dir)) / "submissions"
-        metadata_path = metadata_dir / f"{identity}.json" if version is None else metadata_dir / identity / f"v{version}.json"
-        if version is None and not metadata_path.is_file():
-            versioned = sorted((metadata_dir / identity).glob("v[0-9]*.json"))
-            if len(versioned) == 1:
-                metadata_path = versioned[0]
-            else:
-                raise RuntimeError("Submission metadata is missing or version must be specified")
+        metadata_path = metadata_dir / identity / f"v{version}.json"
         if metadata_path.is_symlink() or not metadata_path.is_file():
             raise RuntimeError("Submission metadata is missing")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -495,32 +484,9 @@ class RemoteAgentService:
         if not isinstance(base, str) or not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", base) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
             raise RuntimeError("Submission base or commit metadata is invalid")
         submission_id = metadata.get("submission_id")
-        # Pre-versioned records predate the explicit ID field. Their stable
-        # compatibility identity is the agent's first submission thread.
-        if version is None and submission_id is None:
-            submission_id = f"{agent_id}-v1"
-        if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,132}", submission_id) or submission_id != f"{agent_id}-v{version or 1}":
+        if not isinstance(submission_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,132}", submission_id) or submission_id != f"{agent_id}-v{version}":
             raise RuntimeError("Submission ID metadata is invalid")
-        # Keep revision artifacts separate while a previous revision is reviewed.
-        artifact = Path(str(self.config.patches_dir)) / f"{submission_id}.patch"
-        if artifact.is_symlink():
-            raise RuntimeError("Generated patch path must not be a symlink")
-        # Reuse an existing compatibility artifact when it still represents this
-        # submission. Regenerating format-patch changes Date/Message-IDs and makes
-        # every routine fetch look like a new review revision.
-        if artifact.is_file():
-            cached = artifact.read_bytes()
-            try:
-                cached_messages = mailbox.mbox(artifact, create=False)
-                valid_cache = len(cached_messages) >= 2 and all(
-                    message.get("Message-ID") and email.utils.parsedate_tz(str(message.get("Date", "")))
-                    for message in cached_messages
-                )
-                cached_messages.close()
-            except (OSError, mailbox.Error):
-                valid_cache = False
-            if valid_cache:
-                return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(cached), "sha256": hashlib.sha256(cached).hexdigest(), "base_commit": base, "submitted_head": head, "cover_letter_message": cover if isinstance((cover := metadata.get("cover_letter_message")), str) else "", "submission_id": submission_id, "ref": ref, "state": registered.get("state")}
+
         generated = subprocess.run(("git", "--git-dir", str(mirror), "format-patch", "--stdout", "--thread=shallow", "--numbered", "--cover-letter", f"{base}..{head}"), capture_output=True, timeout=60)
         if generated.returncode or not generated.stdout:
             raise RuntimeError("Could not generate review mbox from submitted commit series")
@@ -529,8 +495,6 @@ class RemoteAgentService:
             raise RuntimeError("Generated review mbox exceeds size limit")
         # Replace git's placeholder cover body with the exact submitted message.
         from email import policy
-        from email.parser import BytesParser
-        from email.generator import BytesGenerator
         import tempfile
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             input_path = Path(temporary_directory) / "generated.mbox"
@@ -603,23 +567,13 @@ class RemoteAgentService:
             finally:
                 box.close()
             raw = output_path.read_bytes()
-        temporary = artifact.with_name(f".{artifact.name}.{secrets.token_hex(8)}.tmp")
-        temporary.write_bytes(raw)
-        os.replace(temporary, artifact)
-        return {"agent_id": agent_id, "available": True, "artifact": artifact.name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": submission_id, "ref": ref, "state": registered.get("state")}
-
-    async def _pending_patches(self, request):
-        """Compatibility alias for the unified pending mail collection."""
-        result = await self._fetch_pending_agent_mail(request)
-        return {"patches": result["submissions"]}
+        return {"agent_id": agent_id, "submitted_head": head, "base_commit": base, "cover_letter_message": cover, "submission_id": submission_id, "ref": ref, "state": registered.get("state"), "mbox": raw.decode("utf-8", "surrogateescape")}
 
     async def _fetch_pending_agent_mail(self, request):
         """Return serialized submission and lifecycle messages for local Maildir import."""
         submissions = []
         metadata_dir = Path(str(self.config.state_dir)) / "submissions"
         entries = []
-        for path in sorted(metadata_dir.glob("*.json")):
-            entries.append((path, None))  # pre-versioned compatibility record
         for agent_dir in sorted(path for path in metadata_dir.iterdir() if path.is_dir() and not path.is_symlink()):
             for path in sorted(agent_dir.glob("v[0-9]*.json")):
                 match = re.fullmatch(r"v([1-9][0-9]*)\.json", path.name)
@@ -633,15 +587,7 @@ class RemoteAgentService:
                 if not isinstance(agent_id, str):
                     raise RuntimeError("Submission metadata identity is invalid")
                 generated = self._generate_review_patch(agent_id, version)
-                mbox_path = Path(str(self.config.patches_dir)) / str(generated["artifact"])
-                import mailbox
-                box = mailbox.mbox(mbox_path, create=False)
-                try:
-                    messages = [message.as_bytes() for message in box]
-                finally:
-                    box.close()
-                # Preserve exact bytes and mbox separators across JSON transport.
-                submissions.append({**generated, "version": version or 1, "mbox": mbox_path.read_bytes().decode("utf-8", "surrogateescape")})
+                submissions.append({**generated, "version": version, "agent_id": agent_id})
             except Exception as err:
                 submissions.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
         self._record_waiting_questions()
@@ -675,14 +621,6 @@ class RemoteAgentService:
                 except Exception as err:
                     events.append({"event_id": event_path.stem, "error": str(err)})
         return {"submissions": submissions, "events": events}
-
-    async def _patches(self, request):
-        try:
-            identity = re.sub(r"[^A-Za-z0-9_-]", "-", request["agent_id"])
-            versioned = sorted((Path(str(self.config.state_dir)) / "submissions" / identity).glob("v[0-9]*.json"))
-            return self._generate_review_patch(request["agent_id"], int(versioned[-1].stem[1:]) if versioned else None)
-        except Exception as err:
-            return {"agent_id": request["agent_id"], "available": False, "error": str(err)}
 
     async def _dispatch(self, message: object) -> dict[str, object]:
         request_id = message.get("request_id") if isinstance(message, dict) else None
