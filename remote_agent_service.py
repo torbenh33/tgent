@@ -300,6 +300,22 @@ class RemoteAgentService:
     async def _status(self, request):
         return await self.controller.get_status(request["agent_id"])
 
+    def _record_waiting_questions(self) -> None:
+        """Reconcile persisted operator questions into stable mail events."""
+        state_root = getattr(self.controller.store, "state_root", None)
+        if state_root is None:
+            return
+        for metadata_path in Path(state_root).glob("*/metadata.json"):
+            if metadata_path.is_symlink() or not metadata_path.is_file():
+                continue
+            agent_id = metadata_path.parent.name
+            if not isinstance(agent_id, str):
+                continue
+            metadata = self.controller.store.get_metadata(agent_id)
+            question = metadata.get("operator_question")
+            if metadata.get("stop_reason") == "awaiting_command" and isinstance(question, str) and question.strip():
+                self._record_lifecycle_event("operator_question", agent_id, {"question": question})
+
     async def _history(self, request):
         history = await self.controller.get_history(request["agent_id"])
         return {"agent_id": request["agent_id"], "messages": history[-request["limit"]:]}
@@ -569,6 +585,7 @@ class RemoteAgentService:
                 submissions.append({**generated, "version": version or 1, "mbox": mbox_path.read_bytes().decode("utf-8", "surrogateescape")})
             except Exception as err:
                 submissions.append({"agent_id": raw.get("agent_id") if isinstance(raw, dict) else None, "version": version, "error": str(err)})
+        self._record_waiting_questions()
         events = []
         events_dir = Path(str(self.config.state_dir)) / "lifecycle-events"
         if events_dir.is_dir():
@@ -584,7 +601,12 @@ class RemoteAgentService:
                         message["To"] = "operator"
                         message["Date"] = email.utils.formatdate(localtime=True)
                         message["Subject"] = f"[tgit-agent] {event['kind']}: {event['agent_id']}"
-                        message.set_content(f"Event: {event['kind']}\nEvent ID: {event['event_id']}\nTime: {event['event_time']}\nAgent: {event['agent_id']}\nState: {event['state']}\nDetails: {json.dumps(event.get('details', {}), ensure_ascii=False)}\n")
+                        details = event.get('details', {})
+                        if event.get('kind') == 'operator_question':
+                            body = f"Agent {event['agent_id']} awaits your response.\n\nQuestion:\n{details.get('question', '')}\n\nReply using continue_agent for agent {event['agent_id']}; your message resumes the agent.\n"
+                        else:
+                            body = f"Event: {event['kind']}\nEvent ID: {event['event_id']}\nTime: {event['event_time']}\nAgent: {event['agent_id']}\nState: {event['state']}\nDetails: {json.dumps(details, ensure_ascii=False)}\n"
+                        message.set_content(body)
                         event["message"] = message.as_string()
                     events.append(event)
                 except Exception as err:
