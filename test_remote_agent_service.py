@@ -464,6 +464,14 @@ def _test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     assert f"Task:\n{task}" in event_message.get_content()
     repeated = asyncio.run(service._fetch_pending_agent_mail({}))
     assert repeated["submissions"][0]["mbox"] == result["submissions"][0]["mbox"]
+    # Immutable submission refs must yield byte-identical artifacts over time;
+    # changing the cover makes a genuinely new submission artifact.
+    metadata_path = service.config.state_dir / "submissions" / "agent-review" / "v1.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["cover_letter_message"] += " Updated."
+    metadata_path.write_text(json.dumps(metadata))
+    changed = asyncio.run(service._fetch_pending_agent_mail({}))
+    assert changed["submissions"][0]["mbox"] != result["submissions"][0]["mbox"]
 
 
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):

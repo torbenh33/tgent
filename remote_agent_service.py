@@ -546,13 +546,21 @@ class RemoteAgentService:
         reply_to = os.environ.get("TGIT_REVIEW_REPLY_TO", "agent <agent@localhost>").strip()
         if not reply_to or "\\n" in reply_to or "\\r" in reply_to:
             raise RuntimeError("TGIT_REVIEW_REPLY_TO must be a valid single-line identity")
+        # Use the submitted head's commit time rather than fetch time. The mbox is
+        # an artifact for a particular immutable submission: including wall-clock
+        # time made its digest change on every poll, defeating importer idempotency.
+        committed_at = subprocess.run(
+            ("git", "--git-dir", str(mirror), "show", "-s", "--format=%ct", head),
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        stable_date = email.utils.formatdate(int(committed_at), localtime=True)
         for message in messages:
             message["Reply-To"] = reply_to
             message.policy = policy.SMTP
             # Git's format-patch mbox omits Date; downstream Maildir clients such
             # as Mutt rely on it for message ordering and display.
             message._headers = [(name, value) for name, value in message._headers if name.lower() != "date"]
-            message["Date"] = email.utils.formatdate(localtime=True)
+            message["Date"] = stable_date
         with tempfile.TemporaryDirectory(prefix="agent-review-mbox-") as temporary_directory:
             output_path = Path(temporary_directory) / "review.mbox"
             box = mailbox.mbox(output_path)
