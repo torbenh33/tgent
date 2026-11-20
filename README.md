@@ -25,7 +25,7 @@ flowchart LR
             worker -->|invoke| enabled
         end
         controller <-->|start, messages, results| worker
-        discovery[Installed MCP entry points\n(discovered / available)] -->|operator allowlist enables subset| enabled
+    discovery["Installed MCP entry points<br/>(discovered / available)"] -->|operator allowlist enables subset| enabled
         worker -->|reads and edits| snapshot
         controller -->|export patch series| review[Submitted patch artifacts / review state]
     end
@@ -72,6 +72,10 @@ The MCP server uses the directory from which it is launched as its project root.
 `halted` means the worker exited naturally; `stopped` means it was explicitly terminated (including controller shutdown). A live waiting worker can receive follow-up messages in place. After restart, inactive halted or stopped agents can be recovered: continuation creates a new agent from the persisted transcript plus supplied messages and the saved private project snapshot. The original record and snapshot are never modified; the response identifies the child and its `parent_agent_id`. An in-progress guard prevents concurrent recovery from duplicating a child. Recovery requires a valid managed snapshot and is refused if a patch was submitted, to prevent duplicate submissions. Inactive `awaiting_review` and `review_received` agents are not restarted; submitted work stays available for review. `failed` and `reaped` agents are also not recoverable (reaped records/snapshots are removed).
 
 When `import_pending_remote_agent_patches` imports a newly submitted patch for an agent listed as `halted`, it writes an operator notice to the review Maildir (`TGIT_REVIEW_MAILDIR`, or by default `$XDG_STATE_HOME/tgit-review/incoming`, falling back to `~/.local/state/tgit-review/incoming`). This is a local Maildir notification, not SMTP or a system `sendmail` invocation; operators can read it with Maildir-capable mail clients (for example, configure Mutt to use that path). The notice contains the agent ID/name, state, review series, submitted head and base, and guidance to review before further work. It does not include patch content. Idempotent imports and scans without a patch do not notify. Only `halted` is notified; other states are deliberately excluded. Filesystem/mailbox failures are reported as an import error rather than silently changing agent state.
+
+## Local Mutt review mail
+
+The wrapper installed with `python mcp_tgit_review.py --install-mutt-sendmail PATH` opens the local review Maildir and captures outgoing review mail locally; it does not send mail through SMTP. It also runs Mutt with `copy=no` and `record=""` so outgoing review messages are not saved to the account's sent-mail folder, which may be synced to a mail provider. Re-run the installer to update an existing wrapper after changing these settings.
 
 ## Tests
 
