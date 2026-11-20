@@ -337,8 +337,7 @@ def _notify_halted_patch(agent: dict[str, Any], result: dict[str, Any], review_m
         box.close()
 
 
-@mcp.tool()
-async def fetch_pending_agent_mail() -> dict[str, Any]:
+async def _fetch_pending_agent_mail() -> dict[str, Any]:
     """Import pending remote submission PRs and lifecycle mail into review Maildir."""
     remote = _remote_adapter()
     if remote is None:
@@ -368,14 +367,12 @@ async def fetch_pending_agent_mail() -> dict[str, Any]:
             imported = await asyncio.to_thread(
                 review_module.import_patch_series, raw,
                 base=metadata.get("base_commit"), submitted_head=metadata.get("submitted_head"),
-                repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest,
+                repo_path=str(_PROJECT_ROOT), series_id=f"remote-{agent_id}-v{metadata.get('version', 1)}", artifact_sha256=digest, redeliver_existing=False,
             )
             imported = {**imported, "agent_id": agent_id, "artifact_sha256": digest}
-            if imported.get("status") == "ok":
-                # A series import is not proof of mail delivery: make delivery
-                # explicit and retryable using stable Message-IDs.
-                messages = review_module._parse_mbox(raw)
-                await asyncio.to_thread(review_module._import_patches_to_maildir, messages, review_module.DEFAULT_PATHS)
+            if imported.get("status") == "ok" and not imported.get("idempotent"):
+                # The importer delivered this new submitted version. Do not
+                # redeliver an already-imported immutable version on every fetch.
                 imported["maildir_delivered"] = True
             if imported.get("status") == "ok" and not imported.get("idempotent") and metadata.get("state") == "halted":
                 await asyncio.to_thread(_notify_halted_patch, {"agent_id": agent_id, "state": "halted"}, imported, review_module)
@@ -403,6 +400,12 @@ async def fetch_pending_agent_mail() -> dict[str, Any]:
             event_results.append({"event_id": event.get("event_id"), "status": "error", "message": str(err)})
     failures = any(item.get("status") == "error" for item in results + event_results)
     return {"status": "partial" if failures else "ok", "submissions": results, "events": event_results}
+
+
+@mcp.tool()
+async def fetch_pending_agent_mail() -> dict[str, Any]:
+    """Import pending remote submission PRs and lifecycle mail into review Maildir."""
+    return await _fetch_pending_agent_mail()
 
 
 

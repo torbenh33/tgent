@@ -18,6 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 import remote_agent_adapter as adapter_module
+import mcp_agent
+import mcp_tgit_review
 from agent_sandbox import RuntimeManifest, RuntimeMount, SandboxRuntimeLayout, write_runtime_manifest
 from agent_snapshot import SnapshotError, create_project_snapshot
 from remote_agent_adapter import RemoteAgentAdapter
@@ -367,3 +369,36 @@ def test_remote_service_lifecycle_pins_runtime_version(tmp_path: Path, monkeypat
             await service.controller.shutdown()
 
     asyncio.run(exercise_lifecycle())
+
+
+def test_remote_submission_fetch_is_versioned_idempotent_and_not_redelivered(tmp_path, monkeypatch):
+    # Exercise local API semantics with a synthetic, valid-looking mbox; isolate
+    # all importer state and replace validation (covered separately) only here.
+    paths = mcp_tgit_review.ReviewPaths(
+        state_root=tmp_path / "review-state", series_root=tmp_path / "review-state/series",
+        mail_spool=tmp_path / "maildir",
+    )
+    monkeypatch.setattr(mcp_tgit_review, "DEFAULT_PATHS", paths)
+    calls = []
+    def fake_import(raw, **kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "series_id": kwargs["series_id"], "revision": 1,
+                "idempotent": len(calls) > 1}
+    monkeypatch.setattr(mcp_tgit_review, "import_patch_series", fake_import)
+    class Remote:
+        def __init__(self): self.version = 1
+        def fetch_pending_agent_mail(self):
+            return {"submissions": [{"agent_id": "agent-x", "version": self.version,
+                "mbox": "From nobody\nMessage-ID: <p{}@example>\n\nPatch\n".format(self.version),
+                "base_commit": "base", "submitted_head": "head"}], "events": []}
+    remote = Remote()
+    monkeypatch.setattr(mcp_agent, "_remote_adapter", lambda: remote)
+    monkeypatch.setattr(mcp_agent, "_PROJECT_ROOT", tmp_path)
+    first = asyncio.run(mcp_agent._fetch_pending_agent_mail())
+    repeat = asyncio.run(mcp_agent._fetch_pending_agent_mail())
+    assert len(calls) == 2 and calls[1]["redeliver_existing"] is False
+    assert first["submissions"][0]["series_id"] == "remote-agent-x-v1"
+    assert repeat["submissions"][0].get("maildir_delivered") is None
+    remote.version = 2
+    second_version = asyncio.run(mcp_agent._fetch_pending_agent_mail())
+    assert second_version["submissions"][0]["series_id"] == "remote-agent-x-v2"

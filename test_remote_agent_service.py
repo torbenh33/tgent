@@ -444,7 +444,7 @@ def _test_pending_review_bulk_returns_success_and_per_item_errors(tmp_path):
     assert "error" in failure
 
 
-def _test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
+def test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     service, _host, _cover, _base, _head = _published_review_fixture(tmp_path)
     events = service.config.state_dir / "lifecycle-events"
     events.mkdir()
@@ -453,7 +453,7 @@ def _test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     result = asyncio.run(service._fetch_pending_agent_mail({}))
     assert result["submissions"][0]["mbox"]
     first_mbox = result["submissions"][0]["mbox"]
-    assert first_mbox.encode("utf-8", "surrogateescape") == (service.config.patches_dir / result["submissions"][0]["artifact"]).read_bytes()
+    # Mboxes are ephemeral response data; no patches_dir/artifact file exists.
     assert result["events"][0]["message"]
     assert "Message-ID" in result["events"][0]["message"]
     assert result["submissions"][0]["mbox"]
@@ -472,6 +472,14 @@ def _test_fetch_pending_agent_mail_serializes_submissions_and_events(tmp_path):
     metadata_path.write_text(json.dumps(metadata))
     changed = asyncio.run(service._fetch_pending_agent_mail({}))
     assert changed["submissions"][0]["mbox"] != result["submissions"][0]["mbox"]
+    # A new published submission has its own source version, not a local
+    # revision of the first immutable submission.
+    new_metadata = dict(metadata, submission_id="agent-review-v2", ref="refs/agent-submissions/agent-review/v2")
+    submission_dir = metadata_path.parent
+    (submission_dir / "v2.json").write_text(json.dumps(new_metadata))
+    v2 = asyncio.run(service._fetch_pending_agent_mail({}))
+    assert {item["version"] for item in v2["submissions"]} == {1, 2}
+    assert next(item for item in v2["submissions"] if item["version"] == 2).get("error")
 
 
 def test_project_mirror_collision_warns_and_allows_both_paths(tmp_path):
